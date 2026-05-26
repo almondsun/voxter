@@ -1,11 +1,34 @@
 # Build And Test
 
-This repository does not currently define a canonical build system, package
-manifest, formatter, linter, or test runner. Until those exist, use the smallest
-available validation that matches the changed files and state what remains
-unverified.
+This repository defines a Python package manifest and focused validation tools.
+Use the smallest available validation that matches the changed files and state
+what remains unverified.
 
 ## Current Canonical Commands
+
+Unit tests:
+
+```bash
+python -m pytest tests/unit
+```
+
+Linting:
+
+```bash
+python -m ruff check .
+```
+
+Formatting check:
+
+```bash
+python -m ruff format --check .
+```
+
+Type checking:
+
+```bash
+python -m mypy src
+```
 
 Documentation-only changes:
 
@@ -19,40 +42,22 @@ recorded here.
 
 There is currently no canonical command for:
 
-- Python tests
-- linting
-- formatting
-- type checking
+- integration tests
 - package build
 - model training smoke tests
 - runtime smoke tests
 
 Do not invent a passing validation result. If tooling is absent, say so.
 
-## Expected Future Tooling
+## Development Environment
 
-When Python package code is added, prefer a `pyproject.toml` based workflow with
-explicit commands for:
-
-- unit tests
-- integration tests
-- formatting
-- linting
-- type checking
-- package build or import check
-
-Recommended command names, once wired:
+Install the current development tools with:
 
 ```bash
-python -m pytest tests/unit
-python -m pytest tests/integration
-python -m ruff check .
-python -m ruff format --check .
-python -m mypy src
+python -m pip install -e ".[dev]"
 ```
 
-Only list these as canonical after the repository actually defines the tools and
-configuration.
+Use an isolated virtual environment when possible.
 
 ## Validation Selection
 
