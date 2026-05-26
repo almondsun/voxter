@@ -1,0 +1,1305 @@
+\documentclass[11pt]{article}
+
+\usepackage[a4paper,margin=1in]{geometry}
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage{lmodern}
+\usepackage{microtype}
+\usepackage{amsmath,amssymb,mathtools}
+\usepackage{booktabs}
+\usepackage{tabularx}
+\usepackage{enumitem}
+\usepackage{xcolor}
+\usepackage{hyperref}
+\usepackage{bookmark}
+
+\definecolor{voxterblue}{HTML}{174A7C}
+\hypersetup{
+  colorlinks=true,
+  linkcolor=voxterblue,
+  citecolor=voxterblue,
+  urlcolor=voxterblue,
+  pdftitle={Voxter: A Real-Time Visuomotor Agent for Generalized Geometry Dash Play},
+  pdfauthor={Voxter Project}
+}
+
+\setlist[itemize]{leftmargin=*,itemsep=0.25em}
+\setlist[enumerate]{leftmargin=*,itemsep=0.25em}
+\setlength{\parindent}{0pt}
+\setlength{\parskip}{0.65em}
+\emergencystretch=2em
+\setcounter{tocdepth}{2}
+
+\newcommand{\R}{\mathbb{R}}
+\newcommand{\Env}{\mathrm{Env}}
+\newcommand{\BC}{\mathrm{BC}}
+\newcommand{\RL}{\mathrm{RL}}
+\newcommand{\KL}{D_{\mathrm{KL}}}
+\newcommand{\Ppre}{P_{\mathrm{pre}}}
+\newcommand{\obs}{o}
+\newcommand{\act}{a}
+\newcommand{\hist}{\mathcal{H}}
+\newcommand{\policy}{\pi}
+\newcommand{\dhist}[1]{d_{\mathcal{H}}^{#1}}
+\newcommand{\indicator}[1]{\mathbf{1}\{#1\}}
+\DeclareMathOperator*{\argmin}{arg\,min}
+\DeclareMathOperator*{\argmax}{arg\,max}
+
+\title{\textbf{Voxter: A Real-Time Visuomotor Agent for Generalized Geometry Dash Play}\\
+\large Model Theory and Implementation Contracts}
+\author{Voxter Project}
+\date{May 25, 2026}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+Voxter is proposed as a real-time visuomotor policy agent for Geometry Dash. Its purpose is not to reproduce memorized click timestamps for a fixed level, but to learn transferable gameplay behavior: reading visual structure, predicting near-future hazards, and producing the correct binary input state in real time. The central claim of the project is that a model trained on a randomized gameplay generator can acquire reusable control behavior that generalizes to unseen standard levels better than a timestamp bot.
+
+The project begins from human demonstrations collected on a randomized training level. The training level is an endless sequence of randomized sections derived from the main RobTop levels. At each new section, properties such as player form, cosmetic icon appearance, gameplay speed, Ghost Mode fading, and randomized path choices may change. This makes the level a domain-randomized source of gameplay situations rather than a fixed target level. Voxter therefore treats the training level as a generator of scenes, trajectories, and control problems.
+
+The learning pipeline has three stages. Stage 1 trains a reactive behavioral cloning policy from preprocessed visual observations to binary input states. Stage 2 extends the policy with memory, preferably beginning with a GRU, so that the agent can infer velocity, mode context, previous action effects, and other partially observable quantities. Stage 3 fine-tunes the imitation-initialized policy with reinforcement learning under the constraint that the agent must play in real time exactly like a human, without pausing, slowing down, or using privileged future information.
+
+The document formalizes the observation space, action space, causal alignment principle, dataset construction rules, model architecture, learning objectives, reinforcement learning objective, evaluation protocol, generalization criteria, implementation contracts, and expected failure modes.
+\end{abstract}
+
+\begingroup
+\small
+\setlength{\parskip}{0pt}
+\tableofcontents
+\endgroup
+\newpage
+
+\section{Foundations and Thesis}
+
+\subsection{Motivation: From Timestamp Bots to Gameplay Agents}
+
+A traditional Geometry Dash bot can be understood as a replay mechanism. It stores a sequence of input events at specific timestamps or positions and executes them later. This can work very well on a known level, but it is fundamentally brittle. The bot is coupled to the exact level, the exact speed profile, the exact starting conditions, and the exact synchronization assumptions under which the clicks were recorded.
+
+This project aims at a different object. Voxter should not answer the question:
+\begin{quote}
+At what timestamp should the next click occur?
+\end{quote}
+It should answer:
+\begin{quote}
+Given what is visible now, and given the recent history, should the input be held or released?
+\end{quote}
+
+This distinction is the philosophical and technical center of the project. Timestamp learning is an attempt to memorize a script. Visual control is an attempt to learn a policy. A timestamp bot is level-specific. A visuomotor agent can, in principle, transfer to new levels because it conditions its behavior on observations rather than on absolute time.
+
+Geometry Dash is a good environment for this idea because the game is simple at the action level but rich at the perception-control level. The input can be represented as binary: held or released. However, the meaning of that binary input depends on the current game mode, gravity, speed, momentum, portals, jump pads, orbs, obstacle geometry, and recent trajectory. The problem is therefore not action-space complexity. The difficulty lies in learning the correct mapping from visual structure and temporal context to precise control.
+
+\subsection{Core Thesis of Voxter}
+
+The core thesis is:
+\begin{quote}
+Voxter is not a Geometry Dash click predictor. Voxter is a real-time visuomotor policy agent trained from human demonstrations and reinforcement feedback to map visual observations and recent temporal context to binary input states. Its target behavior is transferable gameplay competence on unseen standard levels.
+\end{quote}
+
+In this document, the terms are used as follows:
+\begin{itemize}
+  \item \textbf{Agent} refers to the full deployed system: perception, policy, memory, input execution, and runtime constraints.
+  \item \textbf{Policy} refers to the mathematical function that maps observations or observation histories to actions.
+  \item \textbf{Controller} refers to the subsystem that converts the policy output into real-time input states.
+  \item \textbf{Player} is used only informally when comparing Voxter to human Geometry Dash play.
+\end{itemize}
+
+The formal name of the model class is therefore:
+\begin{quote}
+an imitation-initialized, reinforcement-tuned visuomotor policy agent for a partially observable real-time game environment.
+\end{quote}
+
+A shorter working description is:
+\begin{quote}
+a real-time visuomotor policy agent.
+\end{quote}
+
+\subsection{The Geometry Dash Control Problem}
+
+Geometry Dash is a deterministic or nearly deterministic side-scrolling game from the perspective of a fixed level and fixed starting conditions. However, the agent does not receive a symbolic representation of the level. It receives pixels. It must act from visual input under real-time constraints.
+
+Let the environment have an unobserved state
+\[
+  s_t \in \mathcal{S}.
+\]
+This state includes the player position, velocity, gravity, current mode, speed, level geometry, active portals, animation state, collision state, and other variables. The agent does not directly observe \(s_t\). Instead, the game produces a captured frame
+\[
+  I_t = \Omega(s_t),
+\]
+where \(\Omega\) is the rendering and capture process. The model receives a preprocessed observation
+\[
+  o_t = \Ppre(I_t).
+\]
+
+The agent outputs a binary input state
+\[
+  a_t \in \mathcal{A} = \{0,1\}.
+\]
+The environment evolves according to
+\[
+  s_{t+1} = F(s_t,a_t),
+\]
+where \(F\) is the game transition function. The model does not need to know \(F\) explicitly, but it must learn a policy that chooses useful actions under this transition system.
+
+\subsubsection{Timing Convention and Control Interval}
+
+Unless otherwise stated, \(a_t\) denotes the input state to be applied during the control interval \([t,t+1)\) after the observation \(o_t\) has been made available to the policy. Under this convention, the policy observes \(o_t\), chooses \(a_t\), and the environment transition \(s_t \rightarrow s_{t+1}\) is evaluated under that input state.
+
+Raw logs may record the physical held state at capture time. That logged state may correspond to input that was already being applied before the captured frame was rendered. Dataset construction must therefore align logged input states so that the supervised label represents the action that was causally available from the corresponding observation history.
+
+Because the observation is visual and incomplete, the problem is naturally partially observable. The optimal action may depend not only on \(o_t\), but also on the observation-action history
+\[
+  \mathcal{H}_t = (o_1,a_1,\ldots,o_{t-1},a_{t-1},o_t).
+\]
+Thus the ideal policy has the form
+\[
+  \pi^\star(a_t \mid \mathcal{H}_t).
+\]
+A purely reactive policy approximates
+\[
+  \pi(a_t \mid o_t),
+\]
+or, with a short frame stack,
+\[
+  \pi(a_t \mid o_{t-k+1:t}).
+\]
+A memory-based policy approximates
+\[
+  \pi(a_t \mid o_{\le t}, a_{<t}).
+\]
+
+\section{Training Generator and Generalization}
+
+\subsection{Training Level as a Randomized Gameplay Generator}
+
+The training level is not treated as the final task. It is treated as a generator of gameplay situations.
+
+Let the randomized training generator be \(G\), and let \(P_G\) be the distribution over section configurations induced by \(G\). At each section boundary, the generator samples a new section configuration
+\[
+  z_i \sim P_G.
+\]
+A section configuration can be represented as
+\[
+  z_i = (g_i,m_i,c_i,\nu_i,\rho_i,\gamma_i),
+\]
+where:
+\begin{itemize}
+  \item \(g_i\) is the underlying geometry or obstacle pattern,
+  \item \(m_i\) is the gameplay mode or player form, such as cube, ship, wave, ball, UFO, robot, spider, or swing,
+  \item \(c_i\) is the cosmetic icon appearance when randomized separately,
+  \item \(\nu_i\) is the gameplay speed,
+  \item \(\rho_i\) is the random path configuration,
+  \item \(\gamma_i\) is the visual condition induced by Ghost Mode.
+\end{itemize}
+
+The generator creates a trajectory
+\[
+  \tau = ((o_1,a_1),(o_2,a_2),\ldots,(o_T,a_T)).
+\]
+During data collection, this trajectory is produced by a human demonstrator policy:
+\[
+  a_t \sim \pi_H(\cdot \mid \mathcal{H}_t).
+\]
+The agent is then trained to approximate and eventually improve upon the useful structure of \(\pi_H\).
+
+The generator has two purposes:
+\begin{enumerate}
+  \item Diversity: expose the model to many modes, speeds, paths, and visual conditions.
+  \item Anti-memorization pressure: make absolute timestamp replay ineffective as a general solution.
+\end{enumerate}
+
+The training level therefore implements a form of domain randomization. Let \(P_{G,\pi_H}\) be the trajectory distribution induced by the randomized generator and the human demonstrator policy. Instead of training only on one fixed level, Voxter is trained over a distribution of gameplay situations:
+\[
+  \tau \sim P_{G,\pi_H}.
+\]
+The target is not to master \(G\) as a single level. The target is to learn a control principle that transfers beyond \(G\).
+
+\subsection{Generalization Objective}
+
+The project defines generalization in a practical and gameplay-centered way:
+\begin{quote}
+Voxter generalizes if, when deployed as a fixed trained policy on a brand new standard level, it can play through repeated attempts and eventually complete the level more effectively than a timestamp bot that has no level-specific script.
+\end{quote}
+
+Online adaptation or level-specific fine-tuning may be studied separately, but it is not part of the main real-time transfer claim.
+
+\subsubsection{Fixed-Policy Attempt Semantics}
+
+In the main fixed-policy transfer setting, repeated attempts do not imply level-specific learning. They mean that the same trained policy is evaluated over multiple independent or reset attempts. Success is therefore measured by completion probability, best progress, mean attempts to completion, and robustness under real-time execution. A separate setting may later allow online adaptation across attempts.
+
+There are two levels of generalization.
+
+\subsubsection{In-Generator Generalization}
+
+In-generator generalization refers to performance on unseen sections sampled from the same style of training generator. In this project, some sections are removed during training and added back during testing. These held-out sections are brand new sections added to the section set, but they are subject to the same randomization conditions as the training sections.
+
+This evaluates whether Voxter learned beyond memorizing the exact training sections.
+
+\subsubsection{Out-of-Generator Transfer}
+
+Out-of-generator transfer refers to performance on standard levels outside the randomized generator. This is the ambitious final goal:
+\[
+  \text{train on randomized generated gameplay}
+  \quad\Longrightarrow\quad
+  \text{play unseen standard levels}.
+\]
+This is the stronger and more important claim. It asks whether the model has learned the visual grammar of Geometry Dash: spikes, platforms, orbs, portals, ship corridors, wave patterns, jump timing, and other reusable structures.
+
+\section{Observation and Action Representation}
+
+\subsection{Observation Space}
+
+The raw observation source is the full captured game frame at the base screen resolution. Tensor shapes are written in height-width-channel order:
+\[
+  I_t \in \R^{H_0 \times W_0 \times 3},
+  \qquad
+  H_0 = 1080,\quad W_0 = 1920.
+\]
+The raw frame is not directly used by the model. It is transformed into a preprocessed observation
+\[
+  o_t = \Ppre(I_t),
+\]
+where \(\Ppre\) is a preprocessing function.
+
+The first intended preprocessing pipeline is:
+\begin{enumerate}
+  \item capture the full screen gameplay frame,
+  \item optionally crop only if stable non-game UI elements must be removed,
+  \item resize the frame to a fixed model resolution,
+  \item convert to grayscale,
+  \item normalize pixel values,
+  \item standardize cosmetic player-icon appearance if a reliable method exists,
+  \item construct frame stacks for short-horizon motion inference.
+\end{enumerate}
+
+The model input for Stage 1 is therefore
+\[
+  x_t = (o_{t-k+1}, o_{t-k+2}, \ldots, o_t),
+\]
+where \(k\) is the number of stacked frames. Equivalently,
+\[
+  x_t \in \R^{H \times W \times k}.
+\]
+
+The value of \(k\) should be treated as a tunable hyperparameter. A single frame may be insufficient because velocity, gravity, and momentum are not always inferable from static pixels. A short stack provides minimal temporal information while keeping Stage 1 simpler than a recurrent policy.
+
+The model should infer game mode visually rather than receiving it as an explicit auxiliary input. This enforces the desired property that Voxter plays from the screen like a human.
+
+\subsection{Icon Standardization}
+
+The training generator may randomize both player form and cosmetic icon appearance. Form changes, such as cube, ship, or wave, are gameplay-dynamic conditions represented by \(m_i\). Cosmetic appearance changes are represented by \(c_i\). In principle, both kinds of variation improve robustness, but only cosmetic appearance is a candidate for standardization. The important variables are position, motion, mode, gravity, and collision context.
+
+Therefore, icon standardization is allowed and recommended if it can be implemented reliably. The purpose is to reduce irrelevant appearance variation while preserving the gameplay-relevant state.
+
+Let \(C\) be an icon canonicalization function. Then preprocessing may be represented as
+\[
+  o_t = \Ppre(C(I_t)).
+\]
+The canonicalization process must not introduce future information, privileged game-state access unavailable during deployment, or manually encoded labels. If implemented through computer vision, it should operate only on the captured frame at time \(t\).
+
+Ablation should eventually compare:
+\begin{enumerate}
+  \item no icon standardization,
+  \item icon standardization,
+  \item randomized icon training without standardization.
+\end{enumerate}
+
+The expected benefit is that standardization reduces sample complexity and prevents the model from wasting capacity on cosmetic variation.
+
+\subsection{Binary Action Space}
+
+The action space is the binary input state:
+\[
+  \mathcal{A} = \{0,1\}.
+\]
+The semantics are:
+\[
+  a_t = 0 \quad \text{input released},
+  \qquad
+  a_t = 1 \quad \text{input held}.
+\]
+
+This is not the same as a click-event label. A click is a transition from released to held:
+\[
+  e_t^{\mathrm{press}} = \indicator{a_{t-1}=0 \wedge a_t=1}.
+\]
+A release is a transition from held to released:
+\[
+  e_t^{\mathrm{release}} = \indicator{a_{t-1}=1 \wedge a_t=0}.
+\]
+
+The held-state formulation is essential because Geometry Dash modes often require sustained input. Ship, wave, robot, swing, and related modes are not controlled only by isolated click moments. They depend continuously on whether the input is currently held.
+
+Thus the dataset should store \(a_t\), not merely \(e_t^{\mathrm{press}}\).
+
+\subsection{Rejection of Timestamp Learning}
+
+Voxter explicitly rejects timestamp learning as the primary objective.
+
+A timestamp policy has the approximate form
+\[
+  a_t = f(t),
+\]
+or, for a fixed level,
+\[
+  a_t = f(\ell_t),
+\]
+where \(\ell_t\) may be a deterministic progress coordinate through the known level. This can be effective for replay, but it does not produce transferable gameplay competence.
+
+A visual-control policy has the form
+\[
+  a_t \sim \pi(a_t \mid \mathcal{H}_t),
+\]
+where \(\mathcal{H}_t\) is built from observations and previous actions. Such a policy can, in principle, act on new levels because the decision is conditioned on visible structure rather than on a memorized script.
+
+The training generator is specifically designed to make timestamp memorization weak. Random section ordering, random paths, randomized speeds, icon variation, and Ghost Mode perturbations make any absolute time-based strategy brittle. Voxter must instead learn visual affordances:
+\begin{itemize}
+  \item spikes imply jump avoidance,
+  \item platforms imply landing opportunities,
+  \item portals imply mode or gravity transitions,
+  \item orbs imply timed activation opportunities,
+  \item ship corridors imply continuous vertical control,
+  \item wave patterns imply alternating held and released intervals,
+  \item speed changes imply recalibrated timing.
+\end{itemize}
+
+\section{Dataset Construction and Causal Contracts}
+
+\subsection{Causal Alignment Principle}
+
+The causal alignment principle is one of the central implementation contracts of the project.
+\begin{quote}
+A training label assigned to an observation must correspond to an action chosen from information available at or before that observation, never from future visual consequences.
+\end{quote}
+
+Naively pairing a captured frame \(o_t\) with an input state \(a_t\) may be wrong if the frame has already been affected by the action or if capture and input logs are misaligned.
+
+Let \(a_t^{\mathrm{log}}\) denote the raw logged held-state at capture index \(t\). After system-delay correction, the supervised label for observation \(o_t\) is
+\[
+  y_t = a^{\mathrm{log}}_{t+\delta_{\mathrm{sys}}}.
+\]
+Here a positive \(\delta_{\mathrm{sys}}\) means that the action log lags behind the visual frame by \(\delta_{\mathrm{sys}}\) ticks, so the label must be taken from a later log index. After this correction, the aligned supervised target is treated as the document's \(a_t\):
+\[
+  a_t \equiv y_t,
+  \qquad
+  y_t \sim \pi_H(\cdot \mid \mathcal{H}_t).
+\]
+This sign convention is part of the dataset contract. If an implementation uses the opposite convention, it must translate its offset before reporting \(\delta_{\mathrm{sys}}\).
+
+Samples for which \(t+\delta_{\mathrm{sys}}\) falls outside the valid episode range should be discarded or padded according to the dataset contract.
+
+There are at least two delays to distinguish:
+\[
+  \delta_{\mathrm{system}}:
+  \text{capture, logging, rendering, and input synchronization delay},
+\]
+\[
+  \delta_{\mathrm{human}}:
+  \text{human perception, decision, and motor delay}.
+\]
+
+The system delay should be measured and corrected. The human delay should not be naively removed, because expert gameplay contains anticipatory decisions. A skilled player may press before an obstacle not because of delayed reaction, but because the visual structure predicts the future need for input.
+
+The recommended alignment procedure is:
+\begin{enumerate}
+  \item record frames and input state with timestamps or game-tick indices,
+  \item measure system-level delay through a calibration script,
+  \item shift labels or frames to correct technical misalignment,
+  \item preserve expert anticipatory behavior,
+  \item tune a small residual offset only if validation shows systematic early or late actions,
+  \item verify alignment by online playback performance, not only offline accuracy.
+\end{enumerate}
+
+\subsection{Capture and Dataset Construction Contracts}
+
+The custom capture script must produce enough information for supervised learning, temporal alignment, debugging, and real-time deployment validation.
+
+At minimum, each captured sample should contain
+\[
+  (I_t, a_t, \kappa_t),
+\]
+where:
+\begin{itemize}
+  \item \(I_t\) is the raw captured frame,
+  \item \(a_t\) is the input held-state,
+  \item \(\kappa_t\) is the timestamp or game-tick index.
+\end{itemize}
+
+If possible, the capture script should also record metadata:
+\[
+  q_t = (\mathrm{alive}_t, \mathrm{done}_t, \ell_t, m_t, c_t, \nu_t, \mathrm{seed}_t, \mathrm{section}_t),
+\]
+where:
+\begin{itemize}
+  \item \(\mathrm{alive}_t\) indicates whether the attempt is still active,
+  \item \(\mathrm{done}_t\) indicates death, completion, or another terminal reset condition,
+  \item \(\ell_t\) indicates completion or progress,
+  \item \(m_t\) is game mode if accessible,
+  \item \(c_t\) is icon appearance or cosmetic metadata if accessible,
+  \item \(\nu_t\) is speed if accessible,
+  \item \(\mathrm{seed}_t\) is the random seed if available,
+  \item \(\mathrm{section}_t\) identifies the current generated section if available.
+\end{itemize}
+
+This metadata is not necessarily passed to the model. It is used for dataset analysis, balancing, ablation, and evaluation.
+
+The ideal sampling rate is the game-tick rate. If game-tick capture is too expensive or unstable, a fixed sampling rate may be used, but then the sampling rate becomes part of the formal deployment contract. Training and deployment should use compatible temporal assumptions.
+
+\subsection{Successful and Failed Demonstrations}
+
+The dataset should primarily contain useful gameplay behavior. However, failed attempts can still contain useful prefixes. A failed run often contains many correct decisions before the fatal mistake.
+
+The recommended rule is:
+\begin{quote}
+Keep playable demonstration prefixes; discard death aftermath and clearly invalid control segments.
+\end{quote}
+
+Let \(T_d\) be the death time of an attempt. Instead of discarding the whole attempt, one may keep:
+\[
+  \tau_{\mathrm{valid}} = ((o_1,a_1),\ldots,(o_{T_d-\epsilon},a_{T_d-\epsilon})),
+\]
+where \(\epsilon\) removes the immediate unreliable segment before death if needed.
+
+The value of \(\epsilon\) is a hyperparameter. If the fatal mistake is visible only very close to death, most of the trajectory can be useful. If the trajectory enters an unrecoverable state long before death, a larger prefix truncation is required.
+
+Death animations, post-death frames, menu transitions, attempt reset screens, and idle periods should not be used as normal gameplay training data.
+
+\subsection{Repeated Attempts and Demonstration Diversity}
+
+Repeated attempts of the same section should be included. Even when the same section appears, the human action pattern is not exactly identical. Small variations in timing, held durations, and recovery behavior provide useful diversity.
+
+However, repeated attempts can also cause overfitting if the model sees the same exact obstacle sequence too many times. The dataset should therefore track section frequency when possible.
+
+Let \(n_j\) be the number of samples or trajectories from section \(j\). A simple section-aware sampling rule is:
+\[
+  \Pr(J=j) \propto \min(n_j,n_{\max}),
+\]
+or alternatively sample sections approximately uniformly when section IDs are available.
+
+If section IDs are unavailable, approximate balancing can be performed by mode, speed, death location, or visual clustering.
+
+\subsection{Balancing Strategy}
+
+The binary action distribution may be imbalanced. For example, many frames may be released, especially in cube sections. A naive model may learn a hard bias toward doing nothing.
+
+However, forcing a perfectly balanced dataset can distort the true control distribution. The correct goal is not to make the agent hold and release equally often. The goal is to make the agent sensitive to when holding is appropriate.
+
+The recommended objective is weighted binary cross-entropy:
+\[
+  \mathcal{L}_{\BC}(\theta)
+  =
+  -\sum_t
+  \left[
+    w_1 a_t \log p_t
+    +
+    w_0(1-a_t)\log(1-p_t)
+  \right],
+\]
+where
+\[
+  p_t = \pi_\theta(a_t=1 \mid x_t).
+\]
+
+The weights \(w_0\) and \(w_1\) may be computed from class frequencies, tuned manually, or adapted per game mode.
+
+Game-mode balancing is also important. Cube, ship, wave, ball, UFO, robot, spider, and swing-like behaviors have different action distributions and different consequences of holding. If explicit mode labels are available as metadata, they should be used for dataset auditing and sampler design, even if they are not given to the model at inference time.
+
+Speed and obstacle-density balancing are harder to control realistically and should not be required in the first version. They can still be measured for analysis.
+
+\subsection{Ghost Mode as Visual Domain Randomization}
+
+Ghost Mode fades objects in, out, or both. In the learning theory of Voxter, Ghost Mode is best described as environment-level visual domain randomization or augmentation.
+
+It differs from ordinary image augmentation because the perturbation is part of the generated gameplay environment, not an external transformation applied after recording. Nevertheless, its training effect is similar: it forces the model to rely on robust visual cues rather than brittle pixel-perfect appearances.
+
+Let \(\gamma_i\) denote the Ghost Mode condition for section \(i\). Then the observation process can be represented as
+\[
+  I_t = \Omega_{\gamma_i}(s_t),
+  \qquad
+  o_t = \Ppre(I_t).
+\]
+The model should be evaluated both with and without strong Ghost Mode conditions to determine whether this visual randomization improves robustness or harms precision.
+
+\section{Model Stages and Learning Objectives}
+
+\subsection{Stage 1: Reactive Behavioral Cloning}
+
+Stage 1 trains a visual policy through behavioral cloning. It is both a baseline and a pretraining stage.
+
+The input is a stack of preprocessed observations:
+\[
+  x_t = o_{t-k+1:t}.
+\]
+A visual encoder maps the stack into an embedding:
+\[
+  z_t = E_\theta(x_t).
+\]
+A binary prediction head outputs a probability:
+\[
+  p_t^{\mathrm{react}} = \sigma(Wz_t+b),
+\]
+where
+\[
+  p_t^{\mathrm{react}} = \pi_\theta(a_t=1 \mid x_t).
+\]
+
+The model is trained using behavioral cloning:
+\[
+  \theta^\star = \argmin_\theta \mathcal{L}_{\BC}(\theta).
+\]
+
+The preferred first implementation is:
+\begin{quote}
+CNN encoder \(\rightarrow\) MLP binary head.
+\end{quote}
+A CNN should be preferred over a Transformer in the first version because it is simpler, faster, and likely more sample-efficient for this visual-control baseline. A Transformer or ViT can be introduced later as an ablation or higher-capacity model.
+
+Stage 1 should be evaluated offline and online. Offline accuracy alone is insufficient. A model can achieve high frame-level accuracy but fail catastrophically if it makes rare timing errors at critical points. Therefore, Stage 1 must also be deployed in real gameplay to measure survival and progress.
+
+\subsection{Why Stage 1 Is Not Enough}
+
+Stage 1 is intentionally limited. Even with a frame stack, it is not a full history-based policy. It may fail in situations where the correct action depends on hidden or accumulated state.
+
+Examples include:
+\begin{itemize}
+  \item current vertical velocity,
+  \item gravity direction,
+  \item previous held duration,
+  \item whether a jump has already been committed,
+  \item section context under Ghost Mode,
+  \item future trajectory after an orb or pad,
+  \item mode transition immediately after a portal,
+  \item recovery from slight timing deviations.
+\end{itemize}
+
+This motivates Stage 2.
+
+\subsection{Stage 2: Memory-Based Sequential Policy}
+
+Stage 2 trains a memory-based policy. The preferred first serious memory architecture is a GRU\@.
+
+The Stage 1 visual encoder is reused on the same frame-stack input:
+\[
+  z_t = E_\theta(x_t).
+\]
+The recurrent model receives the visual embedding and the previous action:
+\[
+  u_t = [z_t,a_{t-1}].
+\]
+The hidden state is updated by:
+\[
+  h_t = \mathrm{GRU}_\phi(h_{t-1},u_t).
+\]
+The action probability is:
+\[
+  p_t^{\mathrm{seq}} = \sigma(Wh_t+b).
+\]
+Thus:
+\[
+  \pi_{\theta,\phi}(a_t=1 \mid o_{\le t},a_{<t}) = p_t^{\mathrm{seq}}.
+\]
+
+The previous action is included because Geometry Dash dynamics are input-history-dependent. Whether the button was held in the previous frame affects current velocity and future trajectory.
+
+The recommended architecture progression is:
+\begin{quote}
+CNN + frame stack \(\rightarrow\) CNN + GRU \(\rightarrow\) CNN + LSTM \(\rightarrow\) CNN/ViT + Transformer.
+\end{quote}
+
+Stage 2 should initialize from Stage 1. This means the visual encoder learned during reactive behavioral cloning is reused, then fine-tuned with the recurrent model.
+
+Two training modes should be considered:
+\begin{enumerate}
+  \item freeze \(E_\theta\) initially and train only the recurrent head,
+  \item unfreeze and fine-tune the full network end-to-end.
+\end{enumerate}
+
+The sequence length \(L\) is a hyperparameter:
+\[
+  L \in \{8,16,32,64,128,\ldots\}.
+\]
+Shorter sequences are easier to train but may miss long-range context. Longer sequences may improve memory but increase compute and overfitting risk.
+
+\subsection{Sequential Behavioral Cloning Objective}
+
+For a trajectory
+\[
+  \tau = ((o_1,a_1),\ldots,(o_T,a_T)),
+\]
+Stage 2 minimizes:
+\[
+  \mathcal{L}_{\mathrm{SBC}}(\theta,\phi)
+  =
+  -\sum_{t=1}^{T}
+  \left[
+    w_1 a_t \log p_t
+    +
+    w_0(1-a_t)\log(1-p_t)
+  \right].
+\]
+Here:
+\[
+  p_t = \pi_{\theta,\phi}(a_t=1 \mid o_{\le t},a_{<t}).
+\]
+
+Training should use truncated backpropagation through time. A sequence batch contains contiguous subsequences rather than randomly shuffled frames. This preserves temporal structure.
+
+Let a training window be:
+\[
+  W_i = ((o_i,a_i),\ldots,(o_{i+L-1},a_{i+L-1})).
+\]
+The recurrent state may be reset at the start of each window or warmed up using preceding observations. Warm-up is preferable if compute allows it.
+
+\subsection{Exposure Bias and Compounding Error}
+
+Behavioral cloning trains the policy on histories visited by the human demonstrator. At deployment, the agent may visit histories caused by its own small mistakes. These histories may be outside the training distribution. A small error can therefore compound into a death.
+
+This is the classic exposure-bias problem of imitation learning.
+
+Let \(\dhist{\pi_H}\) be the history visitation distribution induced by the human policy and let \(\dhist{\pi}\) be the history visitation distribution induced by Voxter. Behavioral cloning trains on:
+\[
+  \hist_t \sim \dhist{\pi_H}.
+\]
+Deployment occurs under:
+\[
+  \hist_t \sim \dhist{\pi}.
+\]
+If:
+\[
+  \dhist{\pi} \ne \dhist{\pi_H},
+\]
+then high offline imitation accuracy does not guarantee online success.
+
+This is why the project should include reinforcement learning in the first full version. RL can fine-tune the policy on histories induced by the agent itself.
+
+\subsection{Stage 3: Reinforcement Fine-Tuning}
+
+Stage 3 uses reinforcement learning to improve the imitation-initialized policy through real interaction with the environment.
+
+The policy begins from Stage 2 parameters:
+\[
+  \pi_0 = \pi_{\mathrm{BC+memory}}.
+\]
+
+The RL objective is to maximize expected return:
+\[
+  J(\pi)
+  =
+  \mathbb{E}_{\tau \sim p_\pi(\tau)}
+  \left[
+    \sum_{t=0}^{T}\gamma^t r_t
+  \right],
+\]
+where \(p_\pi(\tau)\) is the closed-loop trajectory distribution induced by the policy, environment dynamics, initial conditions, generator distribution, and termination rule. The term \(r_t\) is the reward and \(\gamma\) is a discount factor.
+
+When the implementation is expressed as a minimization problem, \(\mathcal{L}_{\RL}\) may denote either the negative-return loss
+\[
+  \mathcal{L}_{\RL} = -J(\pi)
+\]
+or an algorithm-specific policy-gradient surrogate. The chosen RL algorithm must define this sign convention explicitly.
+
+The reward must encourage real gameplay progress without creating degenerate behavior. A first reward design is:
+\[
+  r_t
+  =
+  \alpha\,\Delta\mathrm{progress}_t
+  +
+  \beta\,\mathrm{alive}_t
+  +
+  \zeta\,\mathrm{section}_t
+  -
+  \lambda\,\mathrm{death}_t
+  -
+  \mu\,\mathrm{instability}_t.
+\]
+The terms are:
+\begin{itemize}
+  \item \(\Delta\mathrm{progress}_t\): forward progress since the previous tick,
+  \item \(\mathrm{alive}_t\): small survival reward,
+  \item \(\mathrm{section}_t\): reward for passing a section or checkpoint-like boundary,
+  \item \(\mathrm{death}_t\): penalty for dying,
+  \item \(\mathrm{instability}_t\): optional penalty for unnecessary input flickering.
+\end{itemize}
+
+The weights
+\[
+  \alpha,\beta,\zeta,\lambda,\mu
+\]
+must be tuned carefully.
+
+The RL stage should not erase the imitation prior. It should refine it. Possible regularization:
+\[
+  \mathcal{L}_{\RL+\BC}
+  =
+  \mathcal{L}_{\RL}
+  +
+  \kappa\mathcal{L}_{\BC},
+\]
+or a KL penalty to keep the fine-tuned policy near the imitation policy:
+\[
+  \mathcal{L}
+  =
+  \mathcal{L}_{\RL}
+  +
+  \kappa\,
+  \mathbb{E}_{\hist_t \sim \dhist{\pi}}
+  \left[
+    \KL\!\left(
+      \pi_{\RL}(\cdot \mid \hist_t)
+      \,\|\, 
+      \pi_{\BC}(\cdot \mid \hist_t)
+    \right)
+  \right].
+\]
+The purpose is to improve robustness without destroying learned human-like gameplay structure.
+
+\section{Evaluation, Deployment, and Runtime Contracts}
+
+\subsection{Real-Time Deployment Contract}
+
+Voxter must play in real time exactly like a human. It must not pause the game, slow the game, inspect future frames, read privileged game memory for control, or use level-specific scripts.
+
+At deployment, each control cycle must satisfy:
+\[
+  T_{\mathrm{capture}}
+  +
+  T_{\mathrm{preprocess}}
+  +
+  T_{\mathrm{inference}}
+  +
+  T_{\mathrm{input}}
+  \le
+  T_{\mathrm{tick}},
+\]
+where \(T_{\mathrm{tick}}\) is the available time per game tick or deployed sampling interval.
+
+For 60 Hz control:
+\[
+  T_{\mathrm{tick}} \approx 16.67\,\mathrm{ms}.
+\]
+For 120 Hz control:
+\[
+  T_{\mathrm{tick}} \approx 8.33\,\mathrm{ms}.
+\]
+
+The runtime system must define:
+\begin{enumerate}
+  \item frame capture method,
+  \item preprocessing pipeline,
+  \item model inference schedule,
+  \item input execution method,
+  \item action smoothing or thresholding,
+  \item dropped-frame behavior,
+  \item fail-safe behavior when inference misses a deadline.
+\end{enumerate}
+
+If the model outputs a probability \(p_t\), deployment uses a threshold:
+\[
+  a_t = \indicator{p_t > \eta}.
+\]
+The threshold \(\eta\) is tunable. It may be globally fixed or calibrated per model. A hysteresis mechanism may reduce flickering:
+\[
+  \eta_{\mathrm{press}} > \eta_{\mathrm{release}}.
+\]
+For example:
+\[
+  a_t = 1 \quad \text{if } p_t > \eta_{\mathrm{press}},
+\]
+\[
+  a_t = 0 \quad \text{if } p_t < \eta_{\mathrm{release}},
+\]
+and otherwise retain the previous action.
+
+This should be evaluated carefully because excessive smoothing can make the agent late.
+
+\subsection{Offline Evaluation Protocol}
+
+Offline evaluation measures how well the model imitates recorded demonstrations. It is necessary but not sufficient.
+
+The recommended offline metrics are:
+\begin{enumerate}
+  \item binary cross-entropy,
+  \item accuracy,
+  \item balanced accuracy,
+  \item precision, recall, and F1 for held input,
+  \item transition precision and recall,
+  \item press timing error,
+  \item release timing error,
+  \item per-mode performance,
+  \item per-Ghost-Mode performance,
+  \item per-section or held-out-section performance.
+\end{enumerate}
+
+Frame-level accuracy can be misleading. Suppose the correct action is released for 90\% of frames. A model that always releases gets 90\% accuracy but cannot play. Therefore balanced metrics and transition metrics are essential.
+
+Transition metrics are especially important because deaths often occur from incorrect press or release timing rather than from long-duration state mismatch.
+
+Let predicted action be \(\hat{a}_t\). A predicted press event is:
+\[
+  \hat{e}_t^{\mathrm{press}}
+  =
+  \indicator{\hat{a}_{t-1}=0 \wedge \hat{a}_t=1}.
+\]
+A predicted release event is:
+\[
+  \hat{e}_t^{\mathrm{release}}
+  =
+  \indicator{\hat{a}_{t-1}=1 \wedge \hat{a}_t=0}.
+\]
+
+Timing error can be measured by matching predicted transitions to demonstration transitions within a tolerance window.
+
+Let
+\[
+  \widehat{\mathcal{T}}_{\mathrm{press}}
+  =
+  \{t : \hat{e}^{\mathrm{press}}_t = 1\},
+  \qquad
+  \mathcal{T}_{\mathrm{press}}
+  =
+  \{t : e^{\mathrm{press}}_t = 1\}.
+\]
+For a demonstration press at time \(t \in \mathcal{T}_{\mathrm{press}}\), define the nearest predicted press timing error as
+\[
+  \mathrm{err}_{\mathrm{press}}(t)
+  =
+  \min_{\hat{t}\in \widehat{\mathcal{T}}_{\mathrm{press}}}
+  |\hat{t}-t|.
+\]
+A press is counted as matched under tolerance \(\Delta\) when \(\mathrm{err}_{\mathrm{press}}(t)\le \Delta\). Release timing error is defined analogously using \(\widehat{\mathcal{T}}_{\mathrm{release}}\) and \(\mathcal{T}_{\mathrm{release}}\).
+
+\subsection{Online Evaluation Protocol}
+
+Online evaluation is the true test of the model. The agent must play the game under the same real-time conditions expected during deployment.
+
+The recommended online metrics are:
+\begin{enumerate}
+  \item survival time,
+  \item progress percentage,
+  \item section completion rate,
+  \item full-level completion rate,
+  \item death location distribution,
+  \item mean attempts to completion,
+  \item held-out-section success rate,
+  \item standard-level transfer performance,
+  \item performance under Ghost Mode,
+  \item latency and inference deadline misses.
+\end{enumerate}
+
+Online evaluation should be performed at three levels.
+
+\subsubsection{Training-Generator Evaluation}
+
+This tests performance on the same distribution used for training. It helps detect whether the model can play at all.
+
+\subsubsection{Held-Out-Generator Evaluation}
+
+This tests performance on sections removed during training and added back during testing. It measures in-generator generalization.
+
+\subsubsection{Standard-Level Evaluation}
+
+This tests performance on normal levels outside the generator. It measures out-of-generator transfer, the most ambitious goal.
+
+The final success criterion is strong standard-level performance:
+\begin{quote}
+A trained Voxter agent should be able to complete entire standard levels easily, under real-time conditions, without timestamp scripts.
+\end{quote}
+
+\subsection{Baselines}
+
+Even if time is limited, baselines are important for interpreting results.
+
+The most important baselines are:
+\begin{enumerate}
+  \item Timestamp bot: executes a fixed click script. Expected to fail on unseen levels.
+  \item Always release: measures the difficulty of action imbalance.
+  \item Always hold: another trivial action baseline.
+  \item Reactive CNN baseline: Stage 1 model.
+  \item CNN + frame stack: strengthened Stage 1 baseline.
+  \item CNN with GRU memory: first memory baseline.
+  \item CNN with LSTM memory: recurrent comparison.
+  \item Transformer temporal model: high-capacity temporal comparison, if resources allow.
+  \item Human demonstrator: upper reference for the data collection distribution.
+\end{enumerate}
+
+The timestamp bot is philosophically central. Voxter should be evaluated against it because the main claim is not that it can replay a known level, but that it can perform better than timestamp replay on unseen levels.
+
+\subsection{Model Selection and Hyperparameters}
+
+Important tunable parameters include:
+\begin{itemize}
+  \item model input resolution \((H,W)\),
+  \item frame-stack length \(k\),
+  \item recurrent sequence length \(L\),
+  \item CNN encoder depth,
+  \item GRU hidden size,
+  \item action threshold \(\eta\),
+  \item hysteresis thresholds \(\eta_{\mathrm{press}}, \eta_{\mathrm{release}}\),
+  \item class weights \(w_0,w_1\),
+  \item learning rate,
+  \item batch size,
+  \item RL reward weights,
+  \item BC/RL regularization strength,
+  \item label alignment offset \(\delta\).
+\end{itemize}
+
+The most dangerous hyperparameters are those that affect timing:
+\[
+  k,\ L,\ \delta,\ \eta,\ \eta_{\mathrm{press}},\ \eta_{\mathrm{release}}.
+\]
+
+A model can appear good offline but fail online if these are poorly calibrated.
+
+\subsection{Data Splitting Rules}
+
+Data should not be split randomly by frame. Random frame splitting leaks section and trajectory information between train and test.
+
+Bad split:
+\[
+  \text{random frames} \rightarrow \text{train/test}.
+\]
+Better split:
+\[
+  \text{trajectories, sections, seeds, or section families} \rightarrow \text{train/test}.
+\]
+The strongest split is section-level:
+\[
+  Z_{\mathrm{train}} \cap Z_{\mathrm{test}} = \varnothing,
+\]
+where \(Z_{\mathrm{train}}\) and \(Z_{\mathrm{test}}\) are sets of section configurations or section identities.
+
+Since the testing set includes brand new sections added back to the generator, the document defines the held-out generator test as a core benchmark.
+
+\subsection{Partial Observability and Memory Justification}
+
+The game is partially observable from pixels because the rendered frame does not fully expose all state variables. Even when the current frame is visually clear, the correct action may depend on dynamic variables such as velocity.
+
+A recurrent policy maintains an internal state:
+\[
+  h_t = R(h_{t-1},o_t,a_{t-1}).
+\]
+This hidden state approximates sufficient information from the past:
+\[
+  h_t \approx \varphi(o_{\le t},a_{<t}).
+\]
+The policy then acts as:
+\[
+  \pi(a_t \mid h_t).
+\]
+
+This is why a memory architecture is not merely an implementation choice. It is theoretically justified by the partial observability of the control problem.
+
+\section{Implementation Interface, Risks, and Plan}
+
+\subsection{Implementation Architecture}
+
+The deployed system can be described as a loop:
+\begin{enumerate}
+  \item capture frame,
+  \item preprocess frame,
+  \item update observation stack or recurrent state,
+  \item run model inference,
+  \item threshold output probability,
+  \item send held/released input state,
+  \item log runtime data,
+  \item repeat at the target rate.
+\end{enumerate}
+
+In pseudocode:
+\begin{verbatim}
+initialize recurrent state h_0
+initialize previous action a_0 = 0
+
+for each control tick t:
+  I_t = capture_frame()
+  o_t = preprocess(I_t)
+  z_t = encoder(o_t)
+  h_t = memory(h_{t-1}, concat(z_t, a_{t-1}))
+  p_t = sigmoid(head(h_t))
+  a_t = threshold_or_hysteresis(p_t, a_{t-1})
+  apply_input_state(a_t)
+  log(I_t, o_t, p_t, a_t, timestamp_t)
+\end{verbatim}
+
+The exact runtime implementation may differ, but it must preserve the same information constraints.
+
+\subsection{Reinforcement Learning Environment Interface}
+
+For RL, the game must expose an environment-like interface:
+\[
+  (o_t,r_t,\mathrm{done}_t,\mathrm{info}_t)
+  =
+  \Env.\mathrm{step}(a_t).
+\]
+However, because the actual game is real-time and not a standard simulator, the interface may be implemented as a wrapper around capture and input control.
+
+The environment must provide:
+\begin{itemize}
+  \item observations from screen capture,
+  \item actions as held/released input states,
+  \item rewards based on progress and survival,
+  \item terminal signal on death or completion,
+  \item reset mechanism after death or level completion,
+  \item logging for analysis.
+\end{itemize}
+
+If precise progress cannot be read directly, progress may be estimated through visual cues, elapsed time, or level position if accessible for evaluation. Any metadata used only for reward or evaluation must be carefully separated from what the policy observes.
+
+\subsection{Privileged Information Rule}
+
+Voxter may use metadata for training diagnostics, reward computation, evaluation, or dataset balancing. But the deployed policy should not receive privileged information that a human player would not receive visually.
+
+Allowed for model input:
+\begin{itemize}
+  \item captured frames,
+  \item preprocessed frames,
+  \item previous actions,
+  \item recurrent memory computed from past observations.
+\end{itemize}
+
+Allowed for logging/evaluation/reward, but not necessarily for policy input:
+\begin{itemize}
+  \item section ID,
+  \item random seed,
+  \item speed metadata,
+  \item mode metadata,
+  \item death state,
+  \item progress,
+  \item completion state.
+\end{itemize}
+
+Disallowed for policy input in the main real-time claim:
+\begin{itemize}
+  \item future frames,
+  \item exact future obstacle positions not visible on screen,
+  \item hand-coded click timestamps,
+  \item complete level script,
+  \item symbolic level representation unavailable to a human player.
+\end{itemize}
+
+\subsection{Failure Modes and Limitations}
+
+The project should explicitly acknowledge likely failure modes.
+
+\subsubsection{Covariate Shift}
+
+The model may enter states that the human demonstrator rarely visited. This can lead to compounding errors.
+
+\subsubsection{Latency Misalignment}
+
+A small label offset can make the model consistently early or late. Geometry Dash is highly sensitive to timing, so causal alignment is critical.
+
+\subsubsection{Action Imbalance}
+
+If released frames dominate the dataset, the model may learn a passive policy.
+
+\subsubsection{Overfitting to Generator Style}
+
+The model may learn the visual style of RobTop-derived training sections without fully generalizing to arbitrary user-created levels.
+
+\subsubsection{Ghost Mode Ambiguity}
+
+Faded obstacles may make some situations visually ambiguous. Domain randomization helps robustness but may also reduce precision if too aggressive.
+
+\subsubsection{Behavioral Cloning Brittleness}
+
+Behavioral cloning does not teach recovery from the agent's own mistakes unless those states appear in the demonstrations.
+
+\subsubsection{Real-Time Compute Limits}
+
+A model that is accurate but too slow is invalid for the real-time claim.
+
+\subsubsection{Reward Hacking}
+
+The RL stage may exploit poorly designed rewards. Reward terms must be tested for degenerate behavior.
+
+\subsubsection{Standard-Level Transfer Gap}
+
+Completing standard levels may require more than general visual affordances. Some levels depend on memorization, deceptive design, invisible triggers, or nonstandard gameplay conventions.
+
+\subsection{Ethical and Project-Scope Note}
+
+Voxter is a research and engineering project about visual control, imitation learning, reinforcement learning, and real-time gameplay agents. The intended use is experimentation, understanding, and project development. Public release should clearly communicate limitations, avoid misrepresenting performance, and distinguish research demonstrations from competitive or leaderboard use.
+
+\subsection{First-Version Development Plan}
+
+The recommended first-version sequence is:
+\begin{enumerate}
+  \item implement reliable capture and input logging,
+  \item measure synchronization and latency,
+  \item build preprocessing pipeline,
+  \item create dataset format,
+  \item train Stage 1 CNN + frame-stack behavioral cloning,
+  \item deploy Stage 1 online for sanity testing,
+  \item train Stage 2 CNN + GRU sequential policy,
+  \item evaluate on held-out generator sections,
+  \item implement RL wrapper and reward system,
+  \item fine-tune Stage 2 policy with RL,
+  \item evaluate on standard levels,
+  \item perform ablations and document results.
+\end{enumerate}
+
+The first working model should prioritize correctness and measurable learning over architectural complexity.
+
+\subsection{Minimal Dataset Schema}
+
+A practical dataset record may use the following conceptual schema:
+\begin{center}
+\begin{tabular}{ll}
+\toprule
+Field & Meaning \\
+\midrule
+\texttt{sample\_id} & unique sample identifier \\
+\texttt{run\_id} & run identifier \\
+\texttt{frame\_index} & frame index inside the run \\
+\texttt{timestamp} & capture timestamp or game-tick index \\
+\texttt{raw\_frame\_path} & raw frame path \\
+\texttt{preprocessed\_frame\_path} & preprocessed frame path \\
+\texttt{action\_held} & binary held-state action \\
+\texttt{alive} & whether the attempt is still active \\
+\texttt{done} & terminal flag indicating death, completion, or manual reset \\
+\texttt{attempt\_id} & attempt identifier \\
+\texttt{section\_id\_optional} & optional generated-section identifier \\
+\texttt{mode\_optional} & optional mode metadata \\
+\texttt{speed\_optional} & optional speed metadata \\
+\texttt{ghost\_mode\_optional} & optional Ghost Mode metadata \\
+\texttt{progress\_optional} & optional progress metadata \\
+\texttt{notes\_optional} & optional notes \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+For sequence training, records should be grouped by run and ordered by frame index. Shuffling should occur at the sequence-window level, not individual-frame level.
+
+\subsection{Open Questions for Later Iteration}
+
+Several questions remain for later empirical resolution:
+\begin{enumerate}
+  \item best input resolution,
+  \item best frame-stack length,
+  \item whether icon standardization helps or harms,
+  \item whether grayscale loses important information,
+  \item best recurrent sequence length,
+  \item best action thresholding strategy,
+  \item whether GRU is sufficient or LSTM/Transformer improves performance,
+  \item best RL algorithm for this real-time wrapper,
+  \item best progress signal for reward computation,
+  \item best balance between imitation regularization and RL exploration.
+\end{enumerate}
+
+These are not blockers for the first draft. They are experimental variables.
+
+\subsection{Conclusion}
+
+Voxter should be understood as a real-time visuomotor policy agent, not a timestamp bot. The training level is a randomized generator of gameplay situations, not the final task. Human demonstrations provide the initial behavioral structure. A memory-based policy captures the partial observability of the game. Reinforcement learning then fine-tunes the agent on its own interaction distribution.
+
+The theory of Voxter rests on four principles:
+\begin{enumerate}
+  \item Visual causality: actions must be predicted from information available at decision time.
+  \item Binary held-state control: the correct action representation is held/released state, not merely click events.
+  \item Domain-randomized training: randomized sections force the model away from timestamp memorization.
+  \item Real-time deployment: the final agent must act under the same temporal constraints as a human player.
+\end{enumerate}
+
+If these principles are preserved, Voxter can be developed as a serious attempt to learn transferable Geometry Dash gameplay behavior from screen input.
+
+\appendix
+
+\section{Notation Table}
+
+\begin{center}
+\renewcommand{\arraystretch}{1.15}
+\begin{tabularx}{\textwidth}{>{$}l<{$}X}
+\toprule
+\text{Symbol} & Meaning \\
+\midrule
+s_t & unobserved environment state at time \(t\) \\
+I_t & raw captured frame with shape \(H_0 \times W_0 \times 3\) \\
+o_t & preprocessed visual observation \\
+x_t & short frame stack used by the reactive policy \\
+a_t & held/released input state applied over \([t,t+1)\) \\
+\hist_t & observation-action history available at decision time \\
+G & randomized gameplay generator \\
+P_G & section-configuration distribution induced by \(G\) \\
+P_{G,\pi_H} & trajectory distribution induced by \(G\) and human policy \(\pi_H\) \\
+\dhist{\pi} & history visitation distribution induced by policy \(\pi\) \\
+\delta_{\mathrm{sys}} & system-delay offset; positive means action logs lag visual frames \\
+p_t^{\mathrm{react}} & reactive held-input probability \(\pi_\theta(a_t=1\mid x_t)\) \\
+p_t^{\mathrm{seq}} & sequential held-input probability \(\pi_{\theta,\phi}(a_t=1\mid o_{\le t},a_{<t})\) \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+\section{Compact Mathematical Summary}
+
+\[
+\begin{array}{ll}
+I_t \in \R^{H_0 \times W_0 \times 3}
+  & \text{raw frame},\\
+o_t = \Ppre(I_t)
+  & \text{preprocessed observation},\\
+x_t = o_{t-k+1:t}
+  & \text{frame stack},\\
+a_t \in \{0,1\}
+  & \text{binary held-state action},\\
+e_t^{\mathrm{press}}
+  = \indicator{a_{t-1}=0 \wedge a_t=1}
+  & \text{press event},\\
+e_t^{\mathrm{release}}
+  = \indicator{a_{t-1}=1 \wedge a_t=0}
+  & \text{release event},\\
+p_t^{\mathrm{react}} = \pi_\theta(a_t=1 \mid x_t)
+  & \text{reactive policy},\\
+z_t = E_\theta(x_t)
+  & \text{visual embedding},\\
+h_t = R_\phi(h_{t-1},[z_t,a_{t-1}])
+  & \text{memory update},\\
+p_t^{\mathrm{seq}} = \pi_{\theta,\phi}(a_t=1 \mid o_{\le t},a_{<t})
+  & \text{sequential policy}.
+\end{array}
+\]
+
+The behavioral cloning loss is:
+\[
+  \mathcal{L}_{\BC}
+  =
+  -\sum_t
+  \left[
+    w_1 a_t \log p_t
+    +
+    w_0(1-a_t)\log(1-p_t)
+  \right].
+\]
+
+The RL objective is:
+\[
+  J(\pi)
+  =
+  \mathbb{E}_{\tau \sim p_\pi(\tau)}
+  \left[
+    \sum_{t=0}^{T}\gamma^t r_t
+  \right].
+\]
+
+The real-time constraint is:
+\[
+  T_{\mathrm{capture}}
+  +
+  T_{\mathrm{preprocess}}
+  +
+  T_{\mathrm{inference}}
+  +
+  T_{\mathrm{input}}
+  \le
+  T_{\mathrm{tick}}.
+\]
+
+\section{Project Source Notes}
+
+This first draft is based on the project planning answers contained in \texttt{answers.odt} and on the training-level description contained in \texttt{TrainingLevelDescription.txt}.
+
+The training-level source describes the level as an almost totally random endless run of random sections from main RobTop levels, where new sections may change the player form, cosmetic icon appearance, gameplay speed, Ghost Mode fading, and randomized paths.
+
+The planning source specifies the desired document style, target audience, central generalization claim, action definition, observation strategy, training stages, evaluation ambition, real-time constraint, and intention to include reinforcement learning in the first version.
+
+\end{document}
