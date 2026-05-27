@@ -18,6 +18,7 @@ if __package__ is None:
 
 from voxter.capture import CaptureSessionConfig, run_capture_session
 from voxter.capture.frames import FrameCaptureError
+from voxter.capture.preview import PreviewGenerationError
 from voxter.contracts import VoxterContractError
 
 
@@ -36,7 +37,11 @@ def main() -> int:
     parser.add_argument("--attempt-id", default="manual-w")
     parser.add_argument("--run-id", default=None)
     parser.add_argument("--backend", choices=["grim", "pipewire"], default="grim")
-    parser.add_argument("--format", choices=["jpeg", "png", "ppm"], default=None)
+    parser.add_argument(
+        "--format",
+        choices=["jpeg", "png", "ppm", "gray8"],
+        default=None,
+    )
     parser.add_argument("--jpeg-quality", type=int, default=70)
     parser.add_argument("--png-level", type=int, default=0)
     parser.add_argument("--key-code", type=int, default=17)
@@ -47,6 +52,8 @@ def main() -> int:
     parser.add_argument("--sync-writes", action="store_true")
     parser.add_argument("--output-width", type=int, default=None)
     parser.add_argument("--output-height", type=int, default=None)
+    parser.add_argument("--no-preview", action="store_true")
+    parser.add_argument("--preview-name", default="preview.mp4")
     args = parser.parse_args()
 
     run_id = args.run_id or f"manual-{int(time.time())}"
@@ -72,10 +79,18 @@ def main() -> int:
         write_queue_size=args.write_queue_size,
         output_width=args.output_width,
         output_height=args.output_height,
+        generate_preview=not args.no_preview,
+        preview_name=args.preview_name,
     )
     try:
         summary = run_capture_session(config)
-    except (FrameCaptureError, OSError, ValueError, VoxterContractError) as exc:
+    except (
+        FrameCaptureError,
+        PreviewGenerationError,
+        OSError,
+        ValueError,
+        VoxterContractError,
+    ) as exc:
         print(f"capture failed: {exc}", file=sys.stderr)
         return 1
     print(json.dumps(summary.to_json_dict(), indent=2, sort_keys=True))

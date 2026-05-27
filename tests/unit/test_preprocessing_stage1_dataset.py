@@ -149,6 +149,41 @@ def test_build_stage1_dataset_rejects_encoded_frames(tmp_path: Path) -> None:
         )
 
 
+def test_build_stage1_dataset_accepts_cwd_relative_frame_paths(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workspace = tmp_path / "workspace"
+    capture_dir = workspace / "data" / "raw" / "run-1"
+    output_dir = workspace / "data" / "datasets" / "run-1-stage1"
+    write_pgm_capture_fixture(capture_dir)
+    rows = [
+        json.loads(line)
+        for line in (capture_dir / "frames.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()
+    ]
+    for row in rows:
+        row["frame_path"] = str(Path(row["frame_path"]).relative_to(workspace))
+    (capture_dir / "frames.jsonl").write_text(
+        "".join(json.dumps(row, sort_keys=True) + "\n" for row in rows),
+        encoding="utf-8",
+    )
+    monkeypatch.chdir(workspace)
+
+    summary = build_stage1_dataset(
+        Stage1DatasetConfig(
+            capture_dir=Path("data/raw/run-1"),
+            output_dir=Path("data/datasets/run-1-stage1"),
+            observation_width=2,
+            observation_height=1,
+        )
+    )
+
+    assert summary.sample_count == 4
+    assert output_dir.joinpath("stage1_manifest.jsonl").exists()
+
+
 def test_build_stage1_dataset_cli_writes_summary(tmp_path: Path) -> None:
     capture_dir = tmp_path / "capture"
     output_dir = tmp_path / "dataset"

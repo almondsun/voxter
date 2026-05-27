@@ -335,6 +335,8 @@ def _resolve_raw_frame_path(capture_dir: Path, raw_frame_path: str) -> Path:
     path = Path(raw_frame_path)
     if path.is_absolute():
         return path
+    if path.exists():
+        return path.resolve()
     return capture_dir / path
 
 

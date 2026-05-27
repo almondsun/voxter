@@ -41,6 +41,7 @@ def test_build_summary_reports_event_and_frame_transition_counts() -> None:
         capture_durations=[0.01, 0.02, 0.03, 0.04],
         dropped_frame_count=3,
         missed_deadline_estimate=1,
+        preview_path="/tmp/voxter-test/preview.mp4",
     )
 
     assert summary.frame_count == 4
@@ -59,6 +60,9 @@ def test_build_summary_reports_event_and_frame_transition_counts() -> None:
     assert summary.source_height == 1080
     assert not summary.capture_resized
     assert summary.capture_side_preprocessing == ()
+    assert summary.preview_path == "/tmp/voxter-test/preview.mp4"
+    assert summary.preview_generated
+    assert summary.preview_error is None
 
 
 def test_build_summary_reports_capture_side_resize_metadata() -> None:
@@ -94,6 +98,35 @@ def test_build_summary_reports_capture_side_resize_metadata() -> None:
     assert summary.capture_side_preprocessing == ("resize",)
 
 
+def test_build_summary_reports_capture_side_grayscale_metadata() -> None:
+    config = CaptureSessionConfig(
+        output_dir=Path("/tmp/voxter-test"),
+        run_id="run-1",
+        attempt_id="attempt-1",
+        geometry="1920,0 1920x1080",
+        event_device="/dev/input/event5",
+        duration_s=1.0,
+        target_hz=60.0,
+        backend="pipewire",
+        image_format="gray8",
+        output_width=640,
+        output_height=360,
+    )
+
+    summary = _build_summary(
+        config=config,
+        capture_backend="pipewire-gstreamer-gray8",
+        frame_records=[frame_record(0, ActionState.RELEASED)],
+        input_events=[],
+        capture_durations=[0.01],
+        dropped_frame_count=0,
+        missed_deadline_estimate=0,
+    )
+
+    assert summary.image_format == "gray8"
+    assert summary.capture_side_preprocessing == ("resize", "grayscale")
+
+
 def test_run_capture_session_counts_dropped_frame_without_aborting(
     tmp_path: Path,
     monkeypatch,
@@ -113,12 +146,14 @@ def test_run_capture_session_counts_dropped_frame_without_aborting(
             event_device="/dev/input/event10",
             duration_s=0.08,
             target_hz=30.0,
+            generate_preview=False,
         )
     )
 
     assert summary.frame_count >= 1
     assert summary.dropped_frame_count == 1
     assert (tmp_path / "capture_summary.json").exists()
+    assert not summary.preview_generated
 
 
 class FlakyFrameCapture:

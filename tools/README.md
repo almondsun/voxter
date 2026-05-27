@@ -71,6 +71,12 @@ The analyzer checks binary actions, timestamp monotonicity, frame/action
 synchronization at the sampled action timestamp, missing frame files, dropped
 frames, missed periods, and frame-interval statistics.
 
+Every completed capture writes `preview.mp4` next to `capture_summary.json` by
+default. The preview burns in the current W action state and press/release event
+pulses so synchronization can be checked visually after acquisition. Use
+`--no-preview` only for diagnostics where MP4 generation is intentionally
+skipped.
+
 ## Aligned Manifest
 
 `build_aligned_manifest.py` converts one raw capture directory into an
@@ -119,6 +125,18 @@ The tool writes grayscale observation payloads, binary frame-stack payloads,
 `stage1_manifest.jsonl`, and `dataset_summary.json`. It currently requires
 PGM/gray8 frame files; encoded JPEG/PNG capture runs must be decoded by a future
 adapter before they can be used for Stage 1 training.
+
+Validate and record acceptance for a durable Stage 1 dataset:
+
+```bash
+python tools/accept_stage1_dataset.py data/raw/<dataset-id> \
+  data/datasets/<dataset-id>-stage1
+```
+
+The acceptance record is written to `acceptance.json` in the dataset directory.
+It checks the raw capture analysis thresholds, manifest/sample counts, binary
+action presence, payload existence, payload byte sizes, and first-stack warm-up
+semantics.
 
 ## Runtime Benchmark
 

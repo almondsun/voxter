@@ -43,6 +43,11 @@ from voxter.capture.portal import (
     PortalScreenCastStream,
     parse_portal_streams,
 )
+from voxter.capture.preview import (
+    PreviewGenerationError,
+    PreviewGenerationResult,
+    generate_capture_preview,
+)
 from voxter.capture.session import (
     CaptureSessionConfig,
     CaptureSessionSummary,
@@ -67,6 +72,8 @@ __all__ = [
     "PipeWireFramePayload",
     "PortalScreenCastSession",
     "PortalScreenCastStream",
+    "PreviewGenerationError",
+    "PreviewGenerationResult",
     "RawInputEvent",
     "RgbFrame",
     "analyze_capture_run",
@@ -77,6 +84,7 @@ __all__ = [
     "parse_geometry",
     "parse_portal_streams",
     "pipewire_pipeline_description",
+    "generate_capture_preview",
     "reconstruct_held_state",
     "run_capture_session",
     "unpack_input_events",

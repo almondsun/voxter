@@ -1,5 +1,11 @@
 """Preprocessing contracts for raw capture to dataset preparation."""
 
+from voxter.preprocessing.acceptance import (
+    STAGE1_ACCEPTANCE_SCHEMA_VERSION,
+    Stage1DatasetAcceptance,
+    accept_stage1_dataset,
+    write_stage1_dataset_acceptance,
+)
 from voxter.preprocessing.alignment import (
     ALIGNED_MANIFEST_SCHEMA_VERSION,
     AlignedManifestRow,
@@ -42,6 +48,7 @@ __all__ = [
     "DELTA_SYS_CALIBRATION_SCHEMA_VERSION",
     "FRAME_STACK_SCHEMA_VERSION",
     "OBSERVATION_SCHEMA_VERSION",
+    "STAGE1_ACCEPTANCE_SCHEMA_VERSION",
     "STAGE1_DATASET_SUMMARY_SCHEMA_VERSION",
     "STAGE1_MANIFEST_SCHEMA_VERSION",
     "AlignedManifestRow",
@@ -53,9 +60,11 @@ __all__ = [
     "FrameStackConfig",
     "PgmImage",
     "RollingFrameStack",
+    "Stage1DatasetAcceptance",
     "Stage1DatasetConfig",
     "Stage1DatasetSummary",
     "Stage1ManifestRow",
+    "accept_stage1_dataset",
     "build_aligned_manifest",
     "build_stage1_dataset",
     "calibrate_delta_sys",
@@ -64,4 +73,5 @@ __all__ = [
     "preprocess_rgb_observation",
     "write_aligned_manifest",
     "write_delta_sys_calibration_report",
+    "write_stage1_dataset_acceptance",
 ]

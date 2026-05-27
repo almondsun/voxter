@@ -21,6 +21,11 @@ from voxter.capture.frames import (
     validate_frame_records,
 )
 from voxter.capture.pipewire import PipeWireGStreamerFrameCapture
+from voxter.capture.preview import (
+    PreviewGenerationError,
+    PreviewGenerationResult,
+    generate_capture_preview,
+)
 from voxter.contracts import ActionState, extract_action_transitions
 
 
@@ -74,6 +79,8 @@ class CaptureSessionConfig:
     write_queue_size: int = 8
     output_width: int | None = None
     output_height: int | None = None
+    generate_preview: bool = True
+    preview_name: str = "preview.mp4"
 
 
 @dataclass(frozen=True, slots=True)
@@ -107,6 +114,9 @@ class CaptureSessionSummary:
     source_height: int
     capture_resized: bool
     capture_side_preprocessing: tuple[str, ...]
+    preview_path: str | None
+    preview_generated: bool
+    preview_error: str | None
 
     def to_json_dict(self) -> dict[str, object]:
         """Return a stable JSON-compatible representation."""
@@ -139,6 +149,9 @@ class CaptureSessionSummary:
             "source_height": self.source_height,
             "capture_resized": self.capture_resized,
             "capture_side_preprocessing": list(self.capture_side_preprocessing),
+            "preview_path": self.preview_path,
+            "preview_generated": self.preview_generated,
+            "preview_error": self.preview_error,
         }
 
 
@@ -243,6 +256,20 @@ def run_capture_session(config: CaptureSessionConfig) -> CaptureSessionSummary:
 
     validate_frame_records(frame_records)
     validate_input_events(input_events)
+    preview_result: PreviewGenerationResult | None = None
+    preview_error: str | None = None
+    if config.generate_preview:
+        try:
+            preview_result = generate_capture_preview(
+                output_dir,
+                frame_records,
+                input_events,
+                fps=config.target_hz,
+                preview_name=config.preview_name,
+            )
+        except (OSError, ValueError, PreviewGenerationError) as exc:
+            preview_error = str(exc)
+
     summary = _build_summary(
         config=config,
         capture_backend=capture.backend_name,
@@ -251,11 +278,15 @@ def run_capture_session(config: CaptureSessionConfig) -> CaptureSessionSummary:
         capture_durations=capture_durations,
         dropped_frame_count=dropped_frame_count,
         missed_deadline_estimate=missed_deadline_estimate,
+        preview_path=preview_result.preview_path if preview_result else None,
+        preview_error=preview_error,
     )
     summary_path.write_text(
         json.dumps(summary.to_json_dict(), indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
     )
+    if preview_error is not None:
+        raise PreviewGenerationError(preview_error)
     return summary
 
 
@@ -301,6 +332,8 @@ def _build_summary(
     capture_durations: list[float],
     dropped_frame_count: int,
     missed_deadline_estimate: int,
+    preview_path: str | None = None,
+    preview_error: str | None = None,
 ) -> CaptureSessionSummary:
     frame_transitions = extract_action_transitions(
         frame_record.action for frame_record in frame_records
@@ -318,7 +351,9 @@ def _build_summary(
     frame_width = config.output_width or geometry.width
     frame_height = config.output_height or geometry.height
     capture_resized = config.output_width is not None
-    capture_side_preprocessing = ("resize",) if capture_resized else ()
+    capture_side_preprocessing = (("resize",) if capture_resized else ()) + (
+        ("grayscale",) if config.image_format == "gray8" else ()
+    )
 
     return CaptureSessionSummary(
         run_id=config.run_id,
@@ -350,4 +385,7 @@ def _build_summary(
         source_height=geometry.height,
         capture_resized=capture_resized,
         capture_side_preprocessing=capture_side_preprocessing,
+        preview_path=preview_path,
+        preview_generated=preview_path is not None,
+        preview_error=preview_error,
     )
