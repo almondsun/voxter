@@ -14,16 +14,51 @@ immutable.
 `data/datasets/` stores manifests, split definitions, sequence-window indexes,
 and stable dataset metadata consumed by training and evaluation.
 
-## Raw Capture Records
+## Raw Capture Streams
 
-At minimum, a raw record must preserve:
+Raw capture uses two synchronized streams:
+
+- `frames.jsonl` records captured frame paths, frame timestamps, frame indexes,
+  monitor geometry, capture timing, the sampled held state, and the timestamp at
+  which that held state was sampled. It also records encoded frame dimensions,
+  source dimensions, image format, and whether the capture backend resized the
+  frame before writing it.
+- `input_events.jsonl` records high-resolution input events such as press,
+  release, and repeat events from the OS input device.
+
+Input events are the source of truth for press/release transitions. Frame rows
+may include sampled held state for convenience, debugging, and quick validation,
+but preprocessing should be able to reconstruct aligned labels from the input
+event stream so short taps between frame samples are not lost.
+
+Frame and input-event timestamps must be in the same clock domain. Durations and
+deadline measurements may use monotonic clocks, but persisted synchronization
+timestamps must be comparable across streams.
+
+## Raw Frame Records
+
+At minimum, a raw frame record must preserve:
 
 - raw frame payload or raw frame path
-- binary held-state input
-- timestamp or game-tick index
+- binary held-state input sampled at the frame timestamp
+- frame timestamp or game-tick index
+- encoded frame dimensions
+- source capture dimensions
+- image format
+- whether capture-side resizing was applied
 - run identifier
 - attempt identifier when available
 - frame index inside the run or attempt
+
+At minimum, a raw input event record must preserve:
+
+- event timestamp
+- event device identity
+- key code
+- event kind: press, release, or repeat
+- binary held-state after the event
+- run identifier
+- attempt identifier when available
 
 Useful optional metadata:
 
@@ -56,6 +91,10 @@ release_t = action_{t-1} == 1 and action_t == 0
 
 Do not train the primary policy on click timestamps when the contract calls for
 held-state control.
+
+Raw press and release events are still recorded because they preserve timing
+information that frame sampling can miss. They are used to reconstruct the
+held-state label timeline; they are not the primary model target by themselves.
 
 ## Causal Alignment
 
@@ -157,3 +196,23 @@ A dataset manifest should include enough information to reproduce samples:
 - split name
 
 Use explicit schema versioning once manifests are consumed by multiple tools.
+
+## Current Stage 1 Dataset Slice
+
+`stage1-manifest-v1` is the first materialized behavior-cloning dataset
+manifest. Each row points to:
+
+- one raw PGM/gray8 frame path
+- one `observation-v1` grayscale payload
+- one `frame-stack-v1` payload in oldest-to-newest `khw` order
+- one binary held-state label reconstructed from `input_events.jsonl`
+- the persisted `delta_sys` value and split name
+
+Frame stacks reset at run/attempt boundaries. Warm-up repeats the first
+observation in an attempt, so no sample uses future frames or frames from a
+previous attempt.
+
+`dataset_summary.json` uses `stage1-dataset-summary-v1` and records sample
+counts, class counts, weighted-BCE class weights, observation metadata, stack
+metadata, split name, and alignment offset. Missing classes receive a `null`
+weight rather than an artificial infinite or silently guessed value.

@@ -59,6 +59,24 @@ Runtime logs should capture per-stage timings:
 Measure before optimizing. A model that is accurate but misses deadlines is
 invalid for the real-time claim.
 
+Use the runtime-shaped benchmark before claiming live control viability. A
+benchmark that replaces policy and control with stubs can show whether the
+capture/preprocess/decision loop has enough timing headroom, but it does not
+prove the trained policy can play or that OS input injection is safe.
+
+Screenshot-command backends such as `grim` may be useful for offline/debug
+capture, but they should not be treated as production real-time capture unless
+measured latency fits the control-cycle budget. A backend that takes tens of
+milliseconds per frame is incompatible with the 60 Hz runtime claim before
+preprocessing, inference, and input costs are considered.
+
+Prefer a persistent capture stream for real-time recording. The current target
+backend is PipeWire through xdg-desktop-portal and GStreamer `appsink`, so frame
+pulls happen in-process instead of launching one screenshot command per frame.
+Use JPEG output for practical live recording because full-resolution raw PPM can
+exhaust storage within seconds. Keep PPM available only for short diagnostic
+captures where avoiding compression is worth the disk and throughput cost.
+
 ## Model Complexity
 
 Start with the simplest serious architecture:

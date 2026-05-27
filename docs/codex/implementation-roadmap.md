@@ -20,24 +20,32 @@ Update `docs/codex/build-and-test.md` once commands are canonical.
 
 Implement:
 
-- frame capture
-- binary held-state input logging
+- frame capture into `frames.jsonl`
+- high-resolution input event logging into `input_events.jsonl`
+- binary held-state reconstruction from input events
 - timestamps or game-tick indexes
 - run and attempt identifiers
 - raw manifest writing
 - system-delay calibration script
+- an explicit offline/debug capture backend before real-time runtime capture
+- a persistent PipeWire/GStreamer backend for real-time raw recording
 
 Validation:
 
 - manifest schema tests
 - timestamp monotonicity checks
 - held-state transition extraction tests
+- repeat-event filtering tests
+- frame-sampled transition loss summary
+- PipeWire backend smoke test when a desktop session is available
 - calibration fixture or mocked timing test
 
 ## Stage 2: Preprocessing And Dataset Manifests
 
 Implement:
 
+- system-delay calibration reports over candidate `delta_sys` values
+- runtime-shaped latency benchmark with capture/preprocess/policy/control stubs
 - crop and resize
 - grayscale and normalization
 - frame-stack construction
@@ -48,6 +56,8 @@ Implement:
 
 Validation:
 
+- calibration sign and scoring tests
+- runtime deadline accounting tests
 - shape and dtype tests
 - alignment sign tests
 - sequence-window tests
