@@ -216,3 +216,10 @@ previous attempt.
 counts, class counts, weighted-BCE class weights, observation metadata, stack
 metadata, split name, and alignment offset. Missing classes receive a `null`
 weight rather than an artificial infinite or silently guessed value.
+
+When `terminal_events.jsonl` is present, Stage 1 materialization treats those
+events as manual death/reset markers for dataset cleaning. It discards a
+configurable window before and after each marker, records the configured
+`death_tail_s` and `reset_skip_s` values in `dataset_summary.json`, and resets
+frame-stack state after discarded windows. Terminal metadata is diagnostic and
+must not be passed to the policy input.

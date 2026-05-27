@@ -14,6 +14,7 @@ from voxter.contracts import ActionState, CaptureRecordError
 
 EV_KEY = 1
 KEY_W = 17
+KEY_KPPLUS = 78
 LINUX_INPUT_EVENT = struct.Struct("llHHI")
 
 
@@ -58,6 +59,32 @@ class RawInputEvent:
             "key_code": self.key_code,
             "kind": self.kind.value,
             "action": int(self.action),
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class RawTerminalEvent:
+    """Manual terminal marker row, such as a human death/reset marker."""
+
+    run_id: str
+    attempt_id: str | None
+    timestamp: float
+    device: str
+    key_code: int
+    kind: InputEventKind
+    terminal_type: str
+
+    def to_json_dict(self) -> dict[str, object]:
+        """Return a stable JSON-compatible representation."""
+
+        return {
+            "run_id": self.run_id,
+            "attempt_id": self.attempt_id,
+            "timestamp": self.timestamp,
+            "device": self.device,
+            "key_code": self.key_code,
+            "kind": self.kind.value,
+            "terminal_type": self.terminal_type,
         }
 
 
@@ -124,6 +151,35 @@ def raw_input_event_from_kernel(
     )
 
 
+def raw_terminal_event_from_kernel(
+    event: KernelInputEvent,
+    *,
+    run_id: str,
+    attempt_id: str | None,
+    device: str,
+    key_code: int = KEY_KPPLUS,
+    terminal_type: str = "death",
+) -> RawTerminalEvent | None:
+    """Convert a kernel event into a terminal marker row for `key_code` presses."""
+
+    if event.event_type != EV_KEY or event.code != key_code:
+        return None
+
+    kind = key_event_kind(event.value)
+    if kind is not InputEventKind.PRESS:
+        return None
+
+    return RawTerminalEvent(
+        run_id=run_id,
+        attempt_id=attempt_id,
+        timestamp=event.timestamp,
+        device=device,
+        key_code=key_code,
+        kind=kind,
+        terminal_type=terminal_type,
+    )
+
+
 def validate_input_events(events: Iterable[RawInputEvent]) -> None:
     """Validate monotonic raw input events within each run/attempt/device/key."""
 
@@ -146,6 +202,37 @@ def validate_input_events(events: Iterable[RawInputEvent]) -> None:
         previous_timestamp = previous_by_stream.get(stream)
         if previous_timestamp is not None and event.timestamp < previous_timestamp:
             raise CaptureRecordError("input event timestamps must be monotonic")
+        previous_by_stream[stream] = event.timestamp
+
+
+def validate_terminal_events(events: Iterable[RawTerminalEvent]) -> None:
+    """Validate monotonic terminal marker events within each run/attempt/key."""
+
+    event_list = list(events)
+    previous_by_stream: dict[tuple[str, str | None, str, int], float] = {}
+
+    for event in event_list:
+        if not event.run_id:
+            raise CaptureRecordError("terminal event run_id must be non-empty")
+        if event.attempt_id == "":
+            raise CaptureRecordError(
+                "terminal event attempt_id must be None or a non-empty string"
+            )
+        if not isfinite(event.timestamp):
+            raise CaptureRecordError("terminal event timestamp must be finite")
+        if not event.device:
+            raise CaptureRecordError("terminal event device must be non-empty")
+        if event.kind is not InputEventKind.PRESS:
+            raise CaptureRecordError("terminal events must be press markers")
+        if event.terminal_type not in {"death", "reset", "completion"}:
+            raise CaptureRecordError(
+                "terminal_type must be death, reset, or completion"
+            )
+
+        stream = (event.run_id, event.attempt_id, event.device, event.key_code)
+        previous_timestamp = previous_by_stream.get(stream)
+        if previous_timestamp is not None and event.timestamp < previous_timestamp:
+            raise CaptureRecordError("terminal event timestamps must be monotonic")
         previous_by_stream[stream] = event.timestamp
 
 
@@ -182,16 +269,21 @@ class InputEventReader:
         run_id: str,
         attempt_id: str | None,
         key_code: int = KEY_W,
+        terminal_key_code: int | None = None,
+        terminal_type: str = "death",
         include_repeats: bool = False,
     ) -> None:
         self.device = device
         self.run_id = run_id
         self.attempt_id = attempt_id
         self.key_code = key_code
+        self.terminal_key_code = terminal_key_code
+        self.terminal_type = terminal_type
         self.include_repeats = include_repeats
         self._fd: int | None = None
         self._selector = selectors.DefaultSelector()
         self.current_action = ActionState.RELEASED
+        self._terminal_events: list[RawTerminalEvent] = []
 
     def __enter__(self) -> InputEventReader:
         self.open()
@@ -241,6 +333,9 @@ class InputEventReader:
                     key_code=self.key_code,
                 )
                 if row is None:
+                    terminal_row = self._terminal_event_from_kernel(kernel_event)
+                    if terminal_row is not None:
+                        self._terminal_events.append(terminal_row)
                     continue
                 self.current_action = row.action
                 if row.kind is InputEventKind.REPEAT and not self.include_repeats:
@@ -248,3 +343,25 @@ class InputEventReader:
                 rows.append(row)
 
         return rows
+
+    def pop_terminal_events(self) -> list[RawTerminalEvent]:
+        """Return terminal marker events collected by the last reads."""
+
+        events = self._terminal_events
+        self._terminal_events = []
+        return events
+
+    def _terminal_event_from_kernel(
+        self,
+        event: KernelInputEvent,
+    ) -> RawTerminalEvent | None:
+        if self.terminal_key_code is None:
+            return None
+        return raw_terminal_event_from_kernel(
+            event,
+            run_id=self.run_id,
+            attempt_id=self.attempt_id,
+            device=self.device,
+            key_code=self.terminal_key_code,
+            terminal_type=self.terminal_type,
+        )

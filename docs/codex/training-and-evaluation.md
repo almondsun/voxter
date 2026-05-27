@@ -117,3 +117,10 @@ Training artifacts should record:
 - evaluation metrics
 
 Without this metadata, offline and online results are hard to interpret.
+
+## External GPU Handoff
+
+Use `docs/codex/gpu-training-handoff.md` for the current external GPU training
+machine profile and operational handoff workflow. Keep training code
+hardware-agnostic: device, batch size, worker count, and precision must be
+configuration choices rather than hard-coded assumptions.

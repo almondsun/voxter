@@ -7,7 +7,7 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
-from voxter.capture.events import RawInputEvent
+from voxter.capture.events import RawInputEvent, RawTerminalEvent
 from voxter.capture.frames import FrameCaptureRecord
 from voxter.contracts import ActionState, CaptureRecordError
 
@@ -30,6 +30,7 @@ def generate_capture_preview(
     output_dir: Path,
     frame_records: list[FrameCaptureRecord],
     input_events: list[RawInputEvent],
+    terminal_events: list[RawTerminalEvent] | None = None,
     *,
     fps: float,
     preview_name: str = "preview.mp4",
@@ -61,6 +62,7 @@ def generate_capture_preview(
         _build_action_subtitles(
             sorted_frames,
             input_events,
+            terminal_events or [],
             fps=fps,
         ),
         encoding="utf-8",
@@ -120,10 +122,12 @@ def _frame_pattern(frame: FrameCaptureRecord) -> Path:
 def _build_action_subtitles(
     frames: list[FrameCaptureRecord],
     input_events: list[RawInputEvent],
+    terminal_events: list[RawTerminalEvent],
     *,
     fps: float,
 ) -> str:
     events_by_frame = _events_by_frame(frames, input_events)
+    terminal_events_by_frame = _terminal_events_by_frame(frames, terminal_events)
     entries: list[str] = []
     frame_duration = 1.0 / fps
     for index, frame in enumerate(frames, start=1):
@@ -131,9 +135,12 @@ def _build_action_subtitles(
         end_s = index * frame_duration
         action_text = "HELD" if frame.action is ActionState.HELD else "RELEASED"
         event_text = events_by_frame.get(frame.frame_index, "")
+        terminal_text = terminal_events_by_frame.get(frame.frame_index, "")
         text = f"W ACTION: {action_text}"
         if event_text:
             text += f" | EVENT: {event_text}"
+        if terminal_text:
+            text += f" | TERMINAL: {terminal_text}"
         entries.append(
             "\n".join(
                 [
@@ -164,6 +171,30 @@ def _events_by_frame(
             event = sorted_events[event_index]
             if event.timestamp > previous_frame_timestamp:
                 event_labels.append(event.kind.value.upper())
+            event_index += 1
+        if event_labels:
+            event_text_by_frame[frame.frame_index] = ",".join(event_labels)
+        previous_frame_timestamp = frame.timestamp
+    return event_text_by_frame
+
+
+def _terminal_events_by_frame(
+    frames: list[FrameCaptureRecord],
+    terminal_events: list[RawTerminalEvent],
+) -> dict[int, str]:
+    event_text_by_frame: dict[int, str] = {}
+    event_index = 0
+    sorted_events = sorted(terminal_events, key=lambda event: event.timestamp)
+    previous_frame_timestamp = float("-inf")
+    for frame in frames:
+        event_labels: list[str] = []
+        while (
+            event_index < len(sorted_events)
+            and sorted_events[event_index].timestamp <= frame.timestamp
+        ):
+            event = sorted_events[event_index]
+            if event.timestamp > previous_frame_timestamp:
+                event_labels.append(event.terminal_type.upper())
             event_index += 1
         if event_labels:
             event_text_by_frame[frame.frame_index] = ",".join(event_labels)

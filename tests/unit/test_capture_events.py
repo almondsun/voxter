@@ -6,15 +6,19 @@ import pytest
 
 from voxter.capture.events import (
     EV_KEY,
+    KEY_KPPLUS,
     KEY_W,
     LINUX_INPUT_EVENT,
     InputEventKind,
     KernelInputEvent,
     RawInputEvent,
+    RawTerminalEvent,
     raw_input_event_from_kernel,
+    raw_terminal_event_from_kernel,
     reconstruct_held_state,
     unpack_input_events,
     validate_input_events,
+    validate_terminal_events,
 )
 from voxter.contracts import ActionState, CaptureRecordError
 
@@ -119,6 +123,82 @@ def test_raw_input_event_from_kernel_filters_other_event_types_and_keys() -> Non
         )
         is None
     )
+
+
+def test_raw_terminal_event_from_kernel_maps_numpad_plus_press() -> None:
+    event = raw_terminal_event_from_kernel(
+        KernelInputEvent(
+            timestamp=12.5,
+            event_type=EV_KEY,
+            code=KEY_KPPLUS,
+            value=1,
+        ),
+        run_id="run-1",
+        attempt_id="attempt-1",
+        device="/dev/input/event10",
+    )
+
+    assert event == RawTerminalEvent(
+        run_id="run-1",
+        attempt_id="attempt-1",
+        timestamp=12.5,
+        device="/dev/input/event10",
+        key_code=KEY_KPPLUS,
+        kind=InputEventKind.PRESS,
+        terminal_type="death",
+    )
+
+
+def test_raw_terminal_event_from_kernel_ignores_release_and_other_keys() -> None:
+    assert (
+        raw_terminal_event_from_kernel(
+            KernelInputEvent(
+                timestamp=12.5,
+                event_type=EV_KEY,
+                code=KEY_KPPLUS,
+                value=0,
+            ),
+            run_id="run-1",
+            attempt_id="attempt-1",
+            device="/dev/input/event10",
+        )
+        is None
+    )
+    assert (
+        raw_terminal_event_from_kernel(
+            KernelInputEvent(timestamp=12.5, event_type=EV_KEY, code=KEY_W, value=1),
+            run_id="run-1",
+            attempt_id="attempt-1",
+            device="/dev/input/event10",
+        )
+        is None
+    )
+
+
+def test_validate_terminal_events_rejects_non_monotonic_stream() -> None:
+    with pytest.raises(CaptureRecordError, match="monotonic"):
+        validate_terminal_events(
+            [
+                RawTerminalEvent(
+                    run_id="run-1",
+                    attempt_id="attempt-1",
+                    timestamp=2.0,
+                    device="/dev/input/event10",
+                    key_code=KEY_KPPLUS,
+                    kind=InputEventKind.PRESS,
+                    terminal_type="death",
+                ),
+                RawTerminalEvent(
+                    run_id="run-1",
+                    attempt_id="attempt-1",
+                    timestamp=1.0,
+                    device="/dev/input/event10",
+                    key_code=KEY_KPPLUS,
+                    kind=InputEventKind.PRESS,
+                    terminal_type="death",
+                ),
+            ]
+        )
 
 
 def test_reconstruct_held_state_ignores_repeat_events_by_default() -> None:

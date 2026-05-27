@@ -11,7 +11,9 @@ from typing import Protocol, TextIO
 from voxter.capture.events import (
     InputEventReader,
     RawInputEvent,
+    RawTerminalEvent,
     validate_input_events,
+    validate_terminal_events,
 )
 from voxter.capture.frames import (
     FrameCaptureError,
@@ -72,6 +74,8 @@ class CaptureSessionConfig:
     jpeg_quality: int = 70
     png_level: int = 0
     key_code: int = 17
+    terminal_key_code: int | None = None
+    terminal_type: str = "death"
     portal_source_types: int = 1
     portal_cursor_mode: int = 1
     portal_request_timeout_s: int = 20
@@ -97,6 +101,7 @@ class CaptureSessionSummary:
     frame_count: int
     effective_hz: float
     input_event_count: int
+    terminal_event_count: int
     press_release_count: int
     frame_transition_count: int
     held_frame_count: int
@@ -132,6 +137,7 @@ class CaptureSessionSummary:
             "frame_count": self.frame_count,
             "effective_hz": self.effective_hz,
             "input_event_count": self.input_event_count,
+            "terminal_event_count": self.terminal_event_count,
             "press_release_count": self.press_release_count,
             "frame_transition_count": self.frame_transition_count,
             "held_frame_count": self.held_frame_count,
@@ -179,12 +185,14 @@ def run_capture_session(config: CaptureSessionConfig) -> CaptureSessionSummary:
 
     frame_manifest_path = output_dir / "frames.jsonl"
     input_events_path = output_dir / "input_events.jsonl"
+    terminal_events_path = output_dir / "terminal_events.jsonl"
     summary_path = output_dir / "capture_summary.json"
 
     capture = _make_capture_backend(config)
 
     frame_records: list[FrameCaptureRecord] = []
     input_events: list[RawInputEvent] = []
+    terminal_events: list[RawTerminalEvent] = []
     capture_durations: list[float] = []
     dropped_frame_count = 0
     missed_deadline_estimate = 0
@@ -197,9 +205,12 @@ def run_capture_session(config: CaptureSessionConfig) -> CaptureSessionSummary:
                 run_id=config.run_id,
                 attempt_id=config.attempt_id,
                 key_code=config.key_code,
+                terminal_key_code=config.terminal_key_code,
+                terminal_type=config.terminal_type,
             ) as event_reader,
             frame_manifest_path.open("w", encoding="utf-8") as frame_file,
             input_events_path.open("w", encoding="utf-8") as event_file,
+            terminal_events_path.open("w", encoding="utf-8") as terminal_file,
         ):
             started_at = time.monotonic()
             next_frame_at = started_at
@@ -209,6 +220,9 @@ def run_capture_session(config: CaptureSessionConfig) -> CaptureSessionSummary:
                 new_events = event_reader.read_available()
                 _write_input_events(event_file, new_events)
                 input_events.extend(new_events)
+                new_terminal_events = event_reader.pop_terminal_events()
+                _write_terminal_events(terminal_file, new_terminal_events)
+                terminal_events.extend(new_terminal_events)
 
                 now = time.monotonic()
                 if now < next_frame_at:
@@ -235,12 +249,18 @@ def run_capture_session(config: CaptureSessionConfig) -> CaptureSessionSummary:
                     late_events = event_reader.read_available()
                     _write_input_events(event_file, late_events)
                     input_events.extend(late_events)
+                    late_terminal_events = event_reader.pop_terminal_events()
+                    _write_terminal_events(terminal_file, late_terminal_events)
+                    terminal_events.extend(late_terminal_events)
                     next_frame_at += period_s
                     continue
 
                 late_events = event_reader.read_available()
                 _write_input_events(event_file, late_events)
                 input_events.extend(late_events)
+                late_terminal_events = event_reader.pop_terminal_events()
+                _write_terminal_events(terminal_file, late_terminal_events)
+                terminal_events.extend(late_terminal_events)
 
                 frame_records.append(frame_record)
                 frame_file.write(
@@ -256,6 +276,7 @@ def run_capture_session(config: CaptureSessionConfig) -> CaptureSessionSummary:
 
     validate_frame_records(frame_records)
     validate_input_events(input_events)
+    validate_terminal_events(terminal_events)
     preview_result: PreviewGenerationResult | None = None
     preview_error: str | None = None
     if config.generate_preview:
@@ -264,6 +285,7 @@ def run_capture_session(config: CaptureSessionConfig) -> CaptureSessionSummary:
                 output_dir,
                 frame_records,
                 input_events,
+                terminal_events,
                 fps=config.target_hz,
                 preview_name=config.preview_name,
             )
@@ -275,6 +297,7 @@ def run_capture_session(config: CaptureSessionConfig) -> CaptureSessionSummary:
         capture_backend=capture.backend_name,
         frame_records=frame_records,
         input_events=input_events,
+        terminal_events=terminal_events,
         capture_durations=capture_durations,
         dropped_frame_count=dropped_frame_count,
         missed_deadline_estimate=missed_deadline_estimate,
@@ -323,6 +346,15 @@ def _write_input_events(
         event_file.write("\n")
 
 
+def _write_terminal_events(
+    event_file: TextIO,
+    events: list[RawTerminalEvent],
+) -> None:
+    for event in events:
+        event_file.write(json.dumps(event.to_json_dict(), sort_keys=True))
+        event_file.write("\n")
+
+
 def _build_summary(
     *,
     config: CaptureSessionConfig,
@@ -332,6 +364,7 @@ def _build_summary(
     capture_durations: list[float],
     dropped_frame_count: int,
     missed_deadline_estimate: int,
+    terminal_events: list[RawTerminalEvent] | None = None,
     preview_path: str | None = None,
     preview_error: str | None = None,
 ) -> CaptureSessionSummary:
@@ -341,6 +374,7 @@ def _build_summary(
     press_release_count = sum(
         1 for event in input_events if event.kind.value in {"press", "release"}
     )
+    terminal_event_count = len(terminal_events or [])
     held_frame_count = sum(
         1 for frame_record in frame_records if frame_record.action is ActionState.HELD
     )
@@ -366,6 +400,7 @@ def _build_summary(
         frame_count=len(frame_records),
         effective_hz=effective_hz,
         input_event_count=len(input_events),
+        terminal_event_count=terminal_event_count,
         press_release_count=press_release_count,
         frame_transition_count=len(frame_transitions),
         held_frame_count=held_frame_count,

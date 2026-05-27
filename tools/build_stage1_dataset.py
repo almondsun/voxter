@@ -24,6 +24,8 @@ def main() -> int:
     parser.add_argument("--observation-width", type=int, required=True)
     parser.add_argument("--observation-height", type=int, required=True)
     parser.add_argument("--frame-stack-length", type=int, default=4)
+    parser.add_argument("--death-tail-ms", type=float, default=350.0)
+    parser.add_argument("--reset-skip-ms", type=float, default=1500.0)
     parser.add_argument("--manifest-name", default="stage1_manifest.jsonl")
     parser.add_argument("--summary-name", default="dataset_summary.json")
     args = parser.parse_args()
@@ -40,6 +42,8 @@ def main() -> int:
                 split=args.split,
                 manifest_name=args.manifest_name,
                 summary_name=args.summary_name,
+                death_tail_s=args.death_tail_ms / 1000.0,
+                reset_skip_s=args.reset_skip_ms / 1000.0,
             )
         )
     except (OSError, ValueError, VoxterContractError) as exc:

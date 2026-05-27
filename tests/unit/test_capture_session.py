@@ -46,6 +46,7 @@ def test_build_summary_reports_event_and_frame_transition_counts() -> None:
 
     assert summary.frame_count == 4
     assert summary.effective_hz == 2.0
+    assert summary.terminal_event_count == 0
     assert summary.press_release_count == 2
     assert summary.frame_transition_count == 2
     assert summary.held_frame_count == 2
@@ -216,11 +217,15 @@ class FakeEventReader:
         run_id: str,
         attempt_id: str | None,
         key_code: int,
+        terminal_key_code: int | None,
+        terminal_type: str,
     ) -> None:
         self.event_device = event_device
         self.run_id = run_id
         self.attempt_id = attempt_id
         self.key_code = key_code
+        self.terminal_key_code = terminal_key_code
+        self.terminal_type = terminal_type
 
     def __enter__(self) -> FakeEventReader:
         return self
@@ -229,6 +234,9 @@ class FakeEventReader:
         return
 
     def read_available(self) -> list[RawInputEvent]:
+        return []
+
+    def pop_terminal_events(self) -> list[object]:
         return []
 
 

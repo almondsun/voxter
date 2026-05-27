@@ -7,7 +7,13 @@ from dataclasses import dataclass
 from math import ceil
 from pathlib import Path
 
-from voxter.capture.events import InputEventKind, RawInputEvent, validate_input_events
+from voxter.capture.events import (
+    InputEventKind,
+    RawInputEvent,
+    RawTerminalEvent,
+    validate_input_events,
+    validate_terminal_events,
+)
 from voxter.capture.frames import (
     FrameCaptureRecord,
     parse_geometry,
@@ -274,6 +280,28 @@ def load_input_events(path: Path) -> list[RawInputEvent]:
                 action=coerce_action_state(_required_int(row, "action")),
             )
         )
+    return events
+
+
+def load_terminal_events(path: Path) -> list[RawTerminalEvent]:
+    """Load terminal marker events from a capture `terminal_events.jsonl` file."""
+
+    if not path.exists():
+        return []
+    events: list[RawTerminalEvent] = []
+    for row in _load_jsonl(path):
+        events.append(
+            RawTerminalEvent(
+                run_id=_required_str(row, "run_id"),
+                attempt_id=_optional_str(row.get("attempt_id"), "attempt_id"),
+                timestamp=_required_float(row, "timestamp"),
+                device=_required_str(row, "device"),
+                key_code=_required_int(row, "key_code"),
+                kind=InputEventKind(_required_str(row, "kind")),
+                terminal_type=_required_str(row, "terminal_type"),
+            )
+        )
+    validate_terminal_events(events)
     return events
 
 

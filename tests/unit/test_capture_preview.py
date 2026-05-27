@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from voxter.capture.events import InputEventKind, RawInputEvent
+from voxter.capture.events import InputEventKind, RawInputEvent, RawTerminalEvent
 from voxter.capture.frames import FrameCaptureRecord
 from voxter.capture.preview import (
     PreviewGenerationError,
@@ -28,6 +28,7 @@ def test_generate_capture_preview_writes_mp4_and_action_subtitles(
             raw_event(0.015, InputEventKind.PRESS, ActionState.HELD),
             raw_event(0.035, InputEventKind.RELEASE, ActionState.RELEASED),
         ],
+        [terminal_event(0.04)],
         fps=30.0,
     )
 
@@ -39,6 +40,7 @@ def test_generate_capture_preview_writes_mp4_and_action_subtitles(
     assert "W ACTION: RELEASED" in subtitle_text
     assert "W ACTION: HELD" in subtitle_text
     assert "EVENT: PRESS" in subtitle_text
+    assert "TERMINAL: DEATH" in subtitle_text
     probe = subprocess.run(
         [
             "ffprobe",
@@ -122,4 +124,16 @@ def raw_event(
         key_code=17,
         kind=kind,
         action=action,
+    )
+
+
+def terminal_event(timestamp: float) -> RawTerminalEvent:
+    return RawTerminalEvent(
+        run_id="run-1",
+        attempt_id="attempt-1",
+        timestamp=timestamp,
+        device="/dev/input/event5",
+        key_code=78,
+        kind=InputEventKind.PRESS,
+        terminal_type="death",
     )

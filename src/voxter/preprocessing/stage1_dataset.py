@@ -9,6 +9,8 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 
+from voxter.capture.analysis import load_terminal_events
+from voxter.capture.events import RawTerminalEvent
 from voxter.contracts import ActionState, CaptureRecordError
 from voxter.preprocessing.alignment import AlignedManifestRow, build_aligned_manifest
 from voxter.preprocessing.observation import (
@@ -48,6 +50,8 @@ class Stage1DatasetConfig:
     split: str = "unsplit"
     manifest_name: str = "stage1_manifest.jsonl"
     summary_name: str = "dataset_summary.json"
+    death_tail_s: float = 0.35
+    reset_skip_s: float = 1.5
 
     def __post_init__(self) -> None:
         if self.observation_width <= 0:
@@ -65,6 +69,10 @@ class Stage1DatasetConfig:
             raise CaptureRecordError("manifest_name must be a plain file name")
         if not self.summary_name or Path(self.summary_name).name != self.summary_name:
             raise CaptureRecordError("summary_name must be a plain file name")
+        if self.death_tail_s < 0:
+            raise CaptureRecordError("death_tail_s must be non-negative")
+        if self.reset_skip_s < 0:
+            raise CaptureRecordError("reset_skip_s must be non-negative")
 
 
 @dataclass(frozen=True, slots=True)
@@ -92,6 +100,7 @@ class Stage1ManifestRow:
     frame_stack_schema_version: str
     frame_stack_length: int
     frame_stack_layout: str
+    terminal_cleaning_applied: bool
 
     def to_json_dict(self) -> dict[str, object]:
         """Return a stable JSON-compatible representation."""
@@ -118,6 +127,7 @@ class Stage1ManifestRow:
             "frame_stack_schema_version": self.frame_stack_schema_version,
             "frame_stack_length": self.frame_stack_length,
             "frame_stack_layout": self.frame_stack_layout,
+            "terminal_cleaning_applied": self.terminal_cleaning_applied,
         }
 
 
@@ -143,6 +153,10 @@ class Stage1DatasetSummary:
     frame_stack_schema_version: str
     frame_stack_length: int
     frame_stack_layout: str
+    terminal_event_count: int
+    discarded_terminal_window_count: int
+    death_tail_s: float
+    reset_skip_s: float
 
     def to_json_dict(self) -> dict[str, object]:
         """Return a stable JSON-compatible representation."""
@@ -166,6 +180,10 @@ class Stage1DatasetSummary:
             "frame_stack_schema_version": self.frame_stack_schema_version,
             "frame_stack_length": self.frame_stack_length,
             "frame_stack_layout": self.frame_stack_layout,
+            "terminal_event_count": self.terminal_event_count,
+            "discarded_terminal_window_count": self.discarded_terminal_window_count,
+            "death_tail_s": self.death_tail_s,
+            "reset_skip_s": self.reset_skip_s,
         }
 
 
@@ -195,10 +213,19 @@ def build_stage1_dataset(config: Stage1DatasetConfig) -> Stage1DatasetSummary:
         delta_sys=config.delta_sys,
         split=config.split,
     )
+    terminal_events = load_terminal_events(capture_dir / "terminal_events.jsonl")
+    terminal_windows = _terminal_discard_windows(
+        terminal_events,
+        death_tail_s=config.death_tail_s,
+        reset_skip_s=config.reset_skip_s,
+    )
     manifest_rows: list[Stage1ManifestRow] = []
     for group_rows in _rows_by_group(aligned_rows).values():
         stacker = RollingFrameStack(stack_config)
         for aligned_row in sorted(group_rows, key=lambda item: item.frame_index):
+            if _is_discarded_by_terminal_window(aligned_row, terminal_windows):
+                stacker = RollingFrameStack(stack_config)
+                continue
             if aligned_row.image_format != "pgm":
                 raise CaptureRecordError(
                     "Stage 1 materialization currently supports PGM/gray8 frames "
@@ -247,6 +274,7 @@ def build_stage1_dataset(config: Stage1DatasetConfig) -> Stage1DatasetSummary:
                     frame_stack_schema_version=FRAME_STACK_SCHEMA_VERSION,
                     frame_stack_length=frame_stack.length,
                     frame_stack_layout=frame_stack.layout,
+                    terminal_cleaning_applied=bool(terminal_events),
                 )
             )
 
@@ -259,6 +287,8 @@ def build_stage1_dataset(config: Stage1DatasetConfig) -> Stage1DatasetSummary:
         rows=manifest_rows,
         observation_config=observation_config,
         stack_config=stack_config,
+        terminal_event_count=len(terminal_events),
+        discarded_terminal_window_count=len(terminal_windows),
     )
     summary_path = output_dir / config.summary_name
     summary_path.write_text(
@@ -331,6 +361,35 @@ def _rows_by_group(
     return dict(grouped)
 
 
+def _terminal_discard_windows(
+    terminal_events: list[RawTerminalEvent],
+    *,
+    death_tail_s: float,
+    reset_skip_s: float,
+) -> dict[tuple[str, str | None], list[tuple[float, float]]]:
+    grouped: defaultdict[tuple[str, str | None], list[tuple[float, float]]] = (
+        defaultdict(list)
+    )
+    for event in terminal_events:
+        grouped[(event.run_id, event.attempt_id)].append(
+            (event.timestamp - death_tail_s, event.timestamp + reset_skip_s)
+        )
+    return {
+        group: sorted(windows, key=lambda window: window[0])
+        for group, windows in grouped.items()
+    }
+
+
+def _is_discarded_by_terminal_window(
+    row: AlignedManifestRow,
+    windows_by_group: dict[tuple[str, str | None], list[tuple[float, float]]],
+) -> bool:
+    for start_s, end_s in windows_by_group.get((row.run_id, row.attempt_id), []):
+        if start_s <= row.timestamp <= end_s:
+            return True
+    return False
+
+
 def _resolve_raw_frame_path(capture_dir: Path, raw_frame_path: str) -> Path:
     path = Path(raw_frame_path)
     if path.is_absolute():
@@ -362,6 +421,8 @@ def _build_summary(
     rows: list[Stage1ManifestRow],
     observation_config: ObservationConfig,
     stack_config: FrameStackConfig,
+    terminal_event_count: int,
+    discarded_terminal_window_count: int,
 ) -> Stage1DatasetSummary:
     released_count = sum(1 for row in rows if row.action_held == ActionState.RELEASED)
     held_count = sum(1 for row in rows if row.action_held == ActionState.HELD)
@@ -387,6 +448,10 @@ def _build_summary(
         frame_stack_schema_version=FRAME_STACK_SCHEMA_VERSION,
         frame_stack_length=stack_config.length,
         frame_stack_layout=stack_config.layout,
+        terminal_event_count=terminal_event_count,
+        discarded_terminal_window_count=discarded_terminal_window_count,
+        death_tail_s=config.death_tail_s,
+        reset_skip_s=config.reset_skip_s,
     )
 
 

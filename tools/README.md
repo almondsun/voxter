@@ -77,6 +77,26 @@ pulses so synchronization can be checked visually after acquisition. Use
 `--no-preview` only for diagnostics where MP4 generation is intentionally
 skipped.
 
+For clean baseline collection, numpad `+` is the default manual terminal marker:
+
+```bash
+python tools/capture_manual_run.py \
+  --backend pipewire \
+  --format gray8 \
+  --duration 60 \
+  --target-hz 60 \
+  --geometry "1920,0 1920x1080" \
+  --event-device /dev/input/event5 \
+  --key-code 17 \
+  --terminal-key-code 78 \
+  --output-width 640 \
+  --output-height 360
+```
+
+Press numpad `+` once when death or reset occurs. The capture writes
+`terminal_events.jsonl`, and the preview shows `TERMINAL: DEATH` on the
+corresponding frame.
+
 ## Aligned Manifest
 
 `build_aligned_manifest.py` converts one raw capture directory into an
@@ -125,6 +145,11 @@ The tool writes grayscale observation payloads, binary frame-stack payloads,
 `stage1_manifest.jsonl`, and `dataset_summary.json`. It currently requires
 PGM/gray8 frame files; encoded JPEG/PNG capture runs must be decoded by a future
 adapter before they can be used for Stage 1 training.
+
+If `terminal_events.jsonl` exists, Stage 1 materialization removes terminal
+windows using `--death-tail-ms` before each marker and `--reset-skip-ms` after
+each marker. The defaults are conservative for early collection: 350 ms before
+death and 1500 ms after death/reset.
 
 Validate and record acceptance for a durable Stage 1 dataset:
 

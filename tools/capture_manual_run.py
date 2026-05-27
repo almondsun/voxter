@@ -45,6 +45,13 @@ def main() -> int:
     parser.add_argument("--jpeg-quality", type=int, default=70)
     parser.add_argument("--png-level", type=int, default=0)
     parser.add_argument("--key-code", type=int, default=17)
+    parser.add_argument(
+        "--terminal-key-code",
+        type=int,
+        default=78,
+        help="manual terminal/death marker key code; default is numpad plus",
+    )
+    parser.add_argument("--terminal-type", default="death")
     parser.add_argument("--portal-source-types", type=int, default=1)
     parser.add_argument("--portal-cursor-mode", type=int, default=1)
     parser.add_argument("--portal-request-timeout", type=int, default=20)
@@ -72,6 +79,8 @@ def main() -> int:
         jpeg_quality=args.jpeg_quality,
         png_level=args.png_level,
         key_code=args.key_code,
+        terminal_key_code=args.terminal_key_code,
+        terminal_type=args.terminal_type,
         portal_source_types=args.portal_source_types,
         portal_cursor_mode=args.portal_cursor_mode,
         portal_request_timeout_s=args.portal_request_timeout,

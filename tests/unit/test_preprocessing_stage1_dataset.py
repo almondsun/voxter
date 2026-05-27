@@ -134,6 +134,50 @@ def test_build_stage1_dataset_reports_missing_class_weight_as_null(
     assert summary.class_weights == {"released": 0.5, "held": None}
 
 
+def test_build_stage1_dataset_discards_terminal_windows(tmp_path: Path) -> None:
+    capture_dir = tmp_path / "capture"
+    output_dir = tmp_path / "dataset"
+    write_pgm_capture_fixture(capture_dir)
+    terminal_event = {
+        "run_id": "run-1",
+        "attempt_id": "attempt-1",
+        "timestamp": 10.205,
+        "device": "/dev/input/event5",
+        "key_code": 78,
+        "kind": "press",
+        "terminal_type": "death",
+    }
+    (capture_dir / "terminal_events.jsonl").write_text(
+        json.dumps(terminal_event, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+
+    summary = build_stage1_dataset(
+        Stage1DatasetConfig(
+            capture_dir=capture_dir,
+            output_dir=output_dir,
+            observation_width=2,
+            observation_height=1,
+            frame_stack_length=2,
+            death_tail_s=0.05,
+            reset_skip_s=0.2,
+        )
+    )
+
+    manifest_rows = [
+        json.loads(line)
+        for line in (output_dir / "stage1_manifest.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()
+    ]
+    assert [row["frame_index"] for row in manifest_rows] == [0, 1]
+    assert all(row["terminal_cleaning_applied"] for row in manifest_rows)
+    assert summary.terminal_event_count == 1
+    assert summary.discarded_terminal_window_count == 1
+    assert summary.death_tail_s == 0.05
+    assert summary.reset_skip_s == 0.2
+
+
 def test_build_stage1_dataset_rejects_encoded_frames(tmp_path: Path) -> None:
     capture_dir = tmp_path / "capture"
     write_pgm_capture_fixture(capture_dir, image_format="jpeg", suffix=".jpg")
