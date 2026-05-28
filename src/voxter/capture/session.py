@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Protocol, TextIO
 
@@ -262,6 +262,13 @@ def run_capture_session(config: CaptureSessionConfig) -> CaptureSessionSummary:
                 _write_terminal_events(terminal_file, late_terminal_events)
                 terminal_events.extend(late_terminal_events)
 
+                corrected_action = _input_state_at(
+                    input_events,
+                    frame_record.action_sample_timestamp,
+                )
+                if corrected_action is not frame_record.action:
+                    frame_record = replace(frame_record, action=corrected_action)
+
                 frame_records.append(frame_record)
                 frame_file.write(
                     json.dumps(frame_record.to_json_dict(), sort_keys=True)
@@ -288,6 +295,8 @@ def run_capture_session(config: CaptureSessionConfig) -> CaptureSessionSummary:
                 terminal_events,
                 fps=config.target_hz,
                 preview_name=config.preview_name,
+                rejected_tail_s=0.35,
+                rejected_skip_s=1.5,
             )
         except (OSError, ValueError, PreviewGenerationError) as exc:
             preview_error = str(exc)
@@ -353,6 +362,20 @@ def _write_terminal_events(
     for event in events:
         event_file.write(json.dumps(event.to_json_dict(), sort_keys=True))
         event_file.write("\n")
+
+
+def _input_state_at(
+    events: list[RawInputEvent],
+    timestamp: float,
+    *,
+    initial_state: ActionState = ActionState.RELEASED,
+) -> ActionState:
+    state = initial_state
+    for event in events:
+        if event.timestamp > timestamp:
+            break
+        state = event.action
+    return state
 
 
 def _build_summary(

@@ -7,6 +7,7 @@ from voxter.capture.frames import FrameCaptureError, FrameCaptureRecord
 from voxter.capture.session import (
     CaptureSessionConfig,
     _build_summary,
+    _input_state_at,
     run_capture_session,
 )
 from voxter.contracts import ActionState
@@ -155,6 +156,18 @@ def test_run_capture_session_counts_dropped_frame_without_aborting(
     assert summary.dropped_frame_count == 1
     assert (tmp_path / "capture_summary.json").exists()
     assert not summary.preview_generated
+
+
+def test_input_state_at_uses_latest_event_not_after_timestamp() -> None:
+    events = [
+        raw_event(1.0, InputEventKind.PRESS, ActionState.HELD),
+        raw_event(2.0, InputEventKind.RELEASE, ActionState.RELEASED),
+    ]
+
+    assert _input_state_at(events, 0.5) is ActionState.RELEASED
+    assert _input_state_at(events, 1.0) is ActionState.HELD
+    assert _input_state_at(events, 1.5) is ActionState.HELD
+    assert _input_state_at(events, 2.0) is ActionState.RELEASED
 
 
 class FlakyFrameCapture:

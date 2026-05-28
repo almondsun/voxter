@@ -36,6 +36,7 @@ def test_generate_capture_preview_writes_mp4_and_action_subtitles(
     subtitle_path = Path(result.subtitle_path)
     assert preview_path.exists()
     assert preview_path.stat().st_size > 0
+    assert result.rejected_window_count == 1
     subtitle_text = subtitle_path.read_text(encoding="utf-8")
     assert "W ACTION: RELEASED" in subtitle_text
     assert "W ACTION: HELD" in subtitle_text

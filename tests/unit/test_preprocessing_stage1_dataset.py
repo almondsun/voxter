@@ -178,6 +178,50 @@ def test_build_stage1_dataset_discards_terminal_windows(tmp_path: Path) -> None:
     assert summary.reset_skip_s == 0.2
 
 
+def test_build_stage1_dataset_counts_multiple_terminal_windows(tmp_path: Path) -> None:
+    capture_dir = tmp_path / "capture"
+    output_dir = tmp_path / "dataset"
+    write_pgm_capture_fixture(capture_dir, attempts=("attempt-1", "attempt-2"))
+    terminal_events = [
+        {
+            "run_id": "run-1",
+            "attempt_id": "attempt-1",
+            "timestamp": 10.205,
+            "device": "/dev/input/event5",
+            "key_code": 78,
+            "kind": "press",
+            "terminal_type": "death",
+        },
+        {
+            "run_id": "run-1",
+            "attempt_id": "attempt-2",
+            "timestamp": 10.205,
+            "device": "/dev/input/event5",
+            "key_code": 78,
+            "kind": "press",
+            "terminal_type": "death",
+        },
+    ]
+    (capture_dir / "terminal_events.jsonl").write_text(
+        "".join(json.dumps(event, sort_keys=True) + "\n" for event in terminal_events),
+        encoding="utf-8",
+    )
+
+    summary = build_stage1_dataset(
+        Stage1DatasetConfig(
+            capture_dir=capture_dir,
+            output_dir=output_dir,
+            observation_width=2,
+            observation_height=1,
+            death_tail_s=0.05,
+            reset_skip_s=0.2,
+        )
+    )
+
+    assert summary.terminal_event_count == 2
+    assert summary.discarded_terminal_window_count == 2
+
+
 def test_build_stage1_dataset_rejects_encoded_frames(tmp_path: Path) -> None:
     capture_dir = tmp_path / "capture"
     write_pgm_capture_fixture(capture_dir, image_format="jpeg", suffix=".jpg")

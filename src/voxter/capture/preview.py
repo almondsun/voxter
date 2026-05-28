@@ -24,6 +24,7 @@ class PreviewGenerationResult:
     subtitle_path: str
     frame_count: int
     fps: float
+    rejected_window_count: int
 
 
 def generate_capture_preview(
@@ -35,6 +36,8 @@ def generate_capture_preview(
     fps: float,
     preview_name: str = "preview.mp4",
     subtitle_name: str = "preview_actions.srt",
+    rejected_tail_s: float = 0.35,
+    rejected_skip_s: float = 1.5,
 ) -> PreviewGenerationResult:
     """Generate an MP4 preview with burned-in action-state subtitles."""
 
@@ -46,6 +49,10 @@ def generate_capture_preview(
         raise CaptureRecordError("preview_name must be a plain file name")
     if not subtitle_name or Path(subtitle_name).name != subtitle_name:
         raise CaptureRecordError("subtitle_name must be a plain file name")
+    if rejected_tail_s < 0:
+        raise CaptureRecordError("rejected_tail_s must be non-negative")
+    if rejected_skip_s < 0:
+        raise CaptureRecordError("rejected_skip_s must be non-negative")
 
     ffmpeg = shutil.which("ffmpeg")
     if ffmpeg is None:
@@ -67,6 +74,13 @@ def generate_capture_preview(
         ),
         encoding="utf-8",
     )
+    rejected_windows = _rejected_preview_windows(
+        sorted_frames,
+        terminal_events or [],
+        fps=fps,
+        rejected_tail_s=rejected_tail_s,
+        rejected_skip_s=rejected_skip_s,
+    )
     command = [
         ffmpeg,
         "-y",
@@ -78,7 +92,7 @@ def generate_capture_preview(
         "-i",
         str(frame_pattern),
         "-vf",
-        f"subtitles={_escape_filter_path(subtitle_path)}",
+        _preview_filter(subtitle_path, rejected_windows),
         "-pix_fmt",
         "yuv420p",
         "-movflags",
@@ -96,6 +110,7 @@ def generate_capture_preview(
         subtitle_path=str(subtitle_path),
         frame_count=len(sorted_frames),
         fps=fps,
+        rejected_window_count=len(rejected_windows),
     )
 
 
@@ -200,6 +215,77 @@ def _terminal_events_by_frame(
             event_text_by_frame[frame.frame_index] = ",".join(event_labels)
         previous_frame_timestamp = frame.timestamp
     return event_text_by_frame
+
+
+def _rejected_preview_windows(
+    frames: list[FrameCaptureRecord],
+    terminal_events: list[RawTerminalEvent],
+    *,
+    fps: float,
+    rejected_tail_s: float,
+    rejected_skip_s: float,
+) -> list[tuple[float, float]]:
+    windows: list[tuple[float, float]] = []
+    frame_duration = 1.0 / fps
+    for terminal_event in terminal_events:
+        first_index: int | None = None
+        last_index: int | None = None
+        start_timestamp = terminal_event.timestamp - rejected_tail_s
+        end_timestamp = terminal_event.timestamp + rejected_skip_s
+        for index, frame in enumerate(frames):
+            if start_timestamp <= frame.timestamp <= end_timestamp:
+                if first_index is None:
+                    first_index = index
+                last_index = index
+        if first_index is None or last_index is None:
+            continue
+        windows.append(
+            (
+                first_index * frame_duration,
+                (last_index + 1) * frame_duration,
+            )
+        )
+    return _merge_windows(windows)
+
+
+def _merge_windows(windows: list[tuple[float, float]]) -> list[tuple[float, float]]:
+    merged: list[tuple[float, float]] = []
+    for start_s, end_s in sorted(windows):
+        if start_s > end_s:
+            continue
+        if not merged or start_s > merged[-1][1]:
+            merged.append((start_s, end_s))
+        else:
+            previous_start, previous_end = merged[-1]
+            merged[-1] = (previous_start, max(previous_end, end_s))
+    return merged
+
+
+def _preview_filter(
+    subtitle_path: Path,
+    rejected_windows: list[tuple[float, float]],
+) -> str:
+    filters: list[str] = []
+    if rejected_windows:
+        filters.append(
+            "drawbox="
+            "x=0:y=0:w=iw:h=ih:"
+            "color=red@0.32:t=fill:"
+            f"enable='{_rejected_enable_expression(rejected_windows)}'"
+        )
+    filters.append(f"subtitles={_escape_filter_path(subtitle_path)}")
+    return ",".join(filters)
+
+
+def _rejected_enable_expression(windows: list[tuple[float, float]]) -> str:
+    return "+".join(
+        f"between(t,{_format_filter_float(start_s)},{_format_filter_float(end_s)})"
+        for start_s, end_s in windows
+    )
+
+
+def _format_filter_float(value: float) -> str:
+    return f"{value:.6f}".rstrip("0").rstrip(".")
 
 
 def _format_srt_time(seconds: float) -> str:

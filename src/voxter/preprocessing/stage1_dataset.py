@@ -288,7 +288,9 @@ def build_stage1_dataset(config: Stage1DatasetConfig) -> Stage1DatasetSummary:
         observation_config=observation_config,
         stack_config=stack_config,
         terminal_event_count=len(terminal_events),
-        discarded_terminal_window_count=len(terminal_windows),
+        discarded_terminal_window_count=sum(
+            len(windows) for windows in terminal_windows.values()
+        ),
     )
     summary_path = output_dir / config.summary_name
     summary_path.write_text(
