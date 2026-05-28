@@ -32,6 +32,12 @@ Stage 3 is reinforcement fine-tuning:
 Training must respect dataset splits. Do not train and evaluate on randomly
 intermixed frames from the same trajectory when reporting generalization.
 
+Dataset collection phases are defined in `dataset-phases.md`. Training
+configuration should record which phases and run IDs were used. Phase A stable
+baseline data is appropriate for the first Stage 1 baseline; later controlled
+variation, held-out generator, and online-rollout phases should not be silently
+mixed into the same training set.
+
 Use metadata for balancing and analysis when available, but do not feed it to
 the policy unless explicitly testing a privileged-input ablation.
 

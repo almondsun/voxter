@@ -4,6 +4,10 @@ The dataset contract is central to Voxter. The model should learn actions that
 could be chosen from available visual information, not labels leaked from future
 frames or misaligned logs.
 
+For collection-phase definitions, including the current Phase A baseline batch
+and later speed, Ghost Mode, randomization, held-out, and online-rollout phases,
+see `dataset-phases.md`.
+
 ## Directory Contract
 
 `data/raw/` stores accepted capture outputs and source logs. Treat these as
