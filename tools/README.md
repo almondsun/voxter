@@ -163,6 +163,33 @@ It checks the raw capture analysis thresholds, manifest/sample counts, binary
 action presence, payload existence, payload byte sizes, and first-stack warm-up
 semantics.
 
+Smoke-test Stage 1 dataset loading before starting model training:
+
+```bash
+python tools/smoke_stage1_data.py data/datasets/phase-a-baseline-20260527-*-stage1 \
+  --batch-size 16 \
+  --max-batches 4
+```
+
+This dependency-free smoke verifies that materialized manifests share one
+contract, frame-stack payloads can be batched as `N,K,H,W` byte tensors, labels
+are binary, and the batch contract is ready for a later ML-framework adapter.
+
+Run the first tiny Stage 1 optimization smoke after installing the training
+extra:
+
+```bash
+python -m pip install -e ".[train]"
+python tools/smoke_stage1_torch.py data/datasets/phase-a-baseline-20260527-*-stage1 \
+  --batch-size 8 \
+  --train-steps 3 \
+  --device auto
+```
+
+This builds a minimal CNN over the `K,H,W` frame-stack contract, runs a few
+weighted-BCE optimization steps, and reports finite losses plus whether model
+parameters changed. It is a training-path smoke, not a useful trained policy.
+
 ## Runtime Benchmark
 
 `runtime_benchmark.py` measures the runtime-shaped loop:

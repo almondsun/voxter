@@ -24,11 +24,11 @@ as an operational profile, not a hard-coded training contract.
 The RTX 3050 6GB is enough for the first Stage 1 reactive policy experiments,
 especially for the current accepted dataset:
 
-- samples: 586
+- samples: 97,275
 - observation: 640x360 grayscale `uint8`
 - stack length: 4
 - frame-stack payload: 4 x 640 x 360 bytes per sample
-- class weights: held 3.292134831460674, released 0.5895372233400402
+- class totals: 26,930 held and 70,345 released
 
 Use conservative defaults:
 
@@ -60,6 +60,12 @@ python -m pip install -e ".[dev]"
 
 After training dependencies are added, install them with the project-supported
 command rather than ad hoc package pins.
+
+The repository exposes training dependencies as an optional extra:
+
+```bash
+python -m pip install -e ".[train]"
+```
 
 Sanity checks:
 
